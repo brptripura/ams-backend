@@ -11,9 +11,9 @@ const { authenticate } = require('../middleware/auth');
 const { sendMail } = require('../utils/mailer');
 
 // ── Secure token helpers ──────────────────────────────────────────────────
-const generateToken = () => crypto.randomBytes(32).toString('hex');           // 64-char hex
+const generateToken = () => crypto.randomBytes(32).toString('hex');
 const hashToken     = (t) => crypto.createHash('sha256').update(t).digest('hex');
-const generateOTP   = () => Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit
+const generateOTP   = () => Math.floor(100000 + Math.random() * 900000).toString();
 
 // ── Rate limiters ─────────────────────────────────────────────────────────
 const loginLimiter = rateLimit({
@@ -85,7 +85,6 @@ router.post('/register-super-admin', [
   body('department').trim().notEmpty().withMessage('Department is required'),
 ], validate, async (req, res) => {
   try {
-    // ── Secret key guard ───────────────────────────────────────────────────
     const secret         = req.headers['x-register-secret'];
     const expectedSecret = process.env.REGISTER_SECRET;
 
@@ -98,24 +97,15 @@ router.post('/register-super-admin', [
 
     const { name, email, empId, password, phone, department } = req.body;
 
-const existingSuperAdmin = await User.findOne({ role: 'super_admin' });
-if (existingSuperAdmin) {
-  return res.status(403).json({
-    success: false,
-    message: 'Super admin already exists'
-  });
-}
-    // ── Prevent duplicate email ────────────────────────────────────────────
-    // const existingEmail = await User.findOne({ email }).lean();
-    // if (existingEmail)
-    //   return res.status(409).json({ success: false, message: 'Email already exists' });
+    const existingSuperAdmin = await User.findOne({ role: 'super_admin' });
+    if (existingSuperAdmin) {
+      return res.status(403).json({ success: false, message: 'Super admin already exists' });
+    }
 
-    // ── Prevent duplicate empId ────────────────────────────────────────────
     const existingEmpId = await User.findOne({ emp_id: empId }).lean();
     if (existingEmpId)
       return res.status(409).json({ success: false, message: 'Employee ID already exists' });
 
-    // ── Create super_admin ─────────────────────────────────────────────────
     const id = uuidv4();
     await User.create({
       _id:           id,
@@ -150,6 +140,7 @@ if (existingSuperAdmin) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
+
 // ── POST /api/auth/login ──────────────────────────────────────────────────
 router.post('/login', loginLimiter, [
   body('email').isEmail().normalizeEmail(),

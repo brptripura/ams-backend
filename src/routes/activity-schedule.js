@@ -3,12 +3,13 @@ const router   = express.Router();
 const multer   = require('multer');
 const path     = require('path');
 const XLSX     = require('xlsx');
+const PDFDocument = require('pdfkit');
 const { uploadFile } = require('../utils/storage');
 const { v4: uuidv4 } = require('uuid');
 const { ActivitySchedule, ScheduleDocument, User } = require('../models/database');
 const { authenticate, authorize } = require('../middleware/auth');
 
-// For completion attachments (memory storage → Cloudinary)
+// For completion attachments (memory storage -> Cloudinary)
 const uploadAttach = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024, files: 10 },
@@ -19,38 +20,70 @@ const uploadAttach = multer({
   },
 });
 
-// For bulk Excel/CSV upload
-const bulkStorage = multer.memoryStorage();
-const uploadBulk  = multer({
-  storage: bulkStorage,
+// Bulk upload config
+const uploadBulk = multer({
+  storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024, files: 1 },
   fileFilter: (req, file, cb) => {
     const allowed = /xlsx|xls|csv/;
     if (allowed.test(path.extname(file.originalname).toLowerCase())) cb(null, true);
     else cb(new Error('Only Excel (.xlsx/.xls) or CSV files allowed'));
-  },
+  }
 });
 
-// ── GET /activity-schedule — list all (employees see all) ─────────────────
-router.get('/', authenticate, async (req, res) => {
+// ── PDF REPORT ───────────────────────────────────────────────────────────
+router.get('/report/pdf', authenticate, async (req, res) => {
   try {
-    const { status, date_from, date_to, assigned_to, created_by } = req.query;
-    const filter = {};
+    const { filter } = req.query;
+    const query = {};
 
-    if (status)      filter.status         = status;
-    if (assigned_to) filter.assigned_to    = assigned_to;
-    if (created_by)  filter.created_by     = created_by;
-    if (date_from || date_to) {
-      filter.scheduled_date = {};
-      if (date_from) filter.scheduled_date.$gte = date_from;
-      if (date_to)   filter.scheduled_date.$lte = date_to;
+    if (filter === 'monthly') {
+      const now = new Date();
+      const start = new Date(now.getFullYear(), now.getMonth(), 1);
+      const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      query.scheduled_date = {
+        $gte: start.toISOString().slice(0, 10),
+        $lte: end.toISOString().slice(0, 10),
+      };
     }
 
-    const schedules = await ActivitySchedule.find(filter)
+    const activities = await ActivitySchedule.find(query).lean();
+    const doc = new PDFDocument({ margin: 30 });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename=activities.pdf');
+
+    doc.pipe(res);
+    doc.fontSize(18).text('Activity Report', { align: 'center' });
+    doc.moveDown();
+
+    if (!activities.length) {
+      doc.fontSize(12).text('No activities found');
+    } else {
+      activities.forEach((a, i) => {
+        doc.fontSize(12)
+          .text(`${i + 1}. ${a.title || '-'}`)
+          .text(`Location: ${a.location || '-'}`)
+          .text(`Date: ${a.scheduled_date || '-'}`)
+          .text(`Status: ${a.status || '-'}`)
+          .moveDown();
+      });
+    }
+
+    doc.end();
+  } catch (err) {
+    console.error('PDF export error:', err);
+    res.status(500).json({ success: false, message: 'PDF export failed' });
+  }
+});
+
+// ── LIST schedules ───────────────────────────────────────────────────────
+router.get('/', authenticate, async (req, res) => {
+  try {
+    const schedules = await ActivitySchedule.find()
       .sort({ scheduled_date: 1, created_at: -1 })
       .lean();
 
-    // Populate creator, assigned_to, assigned_by, manager, initiated_by, completed_by names
     const userIds = new Set();
     schedules.forEach(s => {
       if (s.created_by)   userIds.add(s.created_by);
@@ -67,7 +100,6 @@ router.get('/', authenticate, async (req, res) => {
     const userMap = {};
     users.forEach(u => { userMap[u._id] = { name: u.name, emp_id: u.emp_id, role: u.role }; });
 
-    // Attach documents for completed schedules
     const completedIds = schedules.filter(s => s.status === 'Completed').map(s => s._id);
     const docs = completedIds.length
       ? await ScheduleDocument.find({ schedule_id: { $in: completedIds } }).lean()
@@ -85,11 +117,11 @@ router.get('/', authenticate, async (req, res) => {
         ...s,
         id:                s._id,
         created_by_name:   userMap[s.created_by]?.name   || null,
-        assigned_to_name:  userMap[s.assigned_to]?.name  || null,
+        assigned_to_name:  s.employee_name || userMap[s.assigned_to]?.name  || null,
         assigned_to_empid: userMap[s.assigned_to]?.emp_id || null,
         assigned_by_name:  s.assigned_by_name || (assignerUser ? `${assignerUser.name} (${rl(assignerUser.role)})` : null),
         assigned_by_empid: assignerUser?.emp_id || null,
-        manager_name:      userMap[s.manager_id]?.name   || null,
+        manager_name:      s.manager_name || userMap[s.manager_id]?.name   || null,
         manager_empid:     userMap[s.manager_id]?.emp_id  || null,
         initiated_by_name: userMap[s.initiated_by]?.name || null,
         completed_by_name: userMap[s.completed_by]?.name || null,
@@ -99,36 +131,12 @@ router.get('/', authenticate, async (req, res) => {
 
     res.json({ success: true, data: result });
   } catch (err) {
-    console.error('GET /activity-schedule error:', err);
-    res.status(500).json({ success: false, message: 'Server error' });
+    console.error('Schedule fetch error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch schedules' });
   }
 });
 
-// ── GET /activity-schedule/my-completed — employee's completed schedules ──
-router.get('/my-completed', authenticate, async (req, res) => {
-  try {
-    const schedules = await ActivitySchedule.find({ completed_by: req.user.id })
-      .sort({ completed_at: -1 })
-      .lean();
-
-    const ids  = schedules.map(s => s._id);
-    const docs = ids.length
-      ? await ScheduleDocument.find({ schedule_id: { $in: ids } }).lean()
-      : [];
-    const docsMap = {};
-    docs.forEach(d => {
-      if (!docsMap[d.schedule_id]) docsMap[d.schedule_id] = [];
-      docsMap[d.schedule_id].push(d);
-    });
-
-    const result = schedules.map(s => ({ ...s, id: s._id, documents: docsMap[s._id] || [] }));
-    res.json({ success: true, data: result });
-  } catch (err) {
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-// ── POST /activity-schedule — create single (manager/admin) ───────────────
+// ── CREATE schedule ─────────────────────────────────────────────────────
 router.post('/', authenticate, authorize('manager', 'admin', 'hr', 'super_admin'), async (req, res) => {
   try {
     const { title, description, scheduled_date, location, assigned_emp_id, assigned_to: assignedToId, manager_id } = req.body;
@@ -136,17 +144,20 @@ router.post('/', authenticate, authorize('manager', 'admin', 'hr', 'super_admin'
     if (!scheduled_date)     return res.status(422).json({ success: false, message: 'Scheduled date is required' });
 
     let assigned_to = null;
+    let employee_name = null;
+
     if (assigned_emp_id) {
-      const emp = await User.findOne({ emp_id: assigned_emp_id }).select('_id').lean();
+      const emp = await User.findOne({ emp_id: assigned_emp_id }).lean();
       if (!emp) return res.status(404).json({ success: false, message: `Employee ${assigned_emp_id} not found` });
       assigned_to = emp._id;
+      employee_name = emp.name;
     } else if (assignedToId) {
-      const emp = await User.findById(assignedToId).select('_id').lean();
+      const emp = await User.findById(assignedToId).lean();
       if (!emp) return res.status(404).json({ success: false, message: 'Assigned employee not found' });
       assigned_to = emp._id;
+      employee_name = emp.name;
     }
 
-    // Resolve assigned_by name from current user
     const creator = await User.findById(req.user.id).select('name role emp_id').lean();
     const roleLabel = { employee:'Employee', manager:'Manager', admin:'Admin', hr:'HR', super_admin:'Super Admin' }[creator?.role] || '';
     const assignedByName = creator ? `${creator.name} (${roleLabel})` : null;
@@ -158,72 +169,77 @@ router.post('/', authenticate, authorize('manager', 'admin', 'hr', 'super_admin'
       scheduled_date,
       location:         location?.trim() || null,
       assigned_to,
+      employee_name,
       created_by:       req.user.id,
       assigned_by:      req.user.id,
       assigned_by_name: assignedByName,
       manager_id:       manager_id || null,
     });
 
-    res.status(201).json({ success: true, data: { ...schedule.toObject(), id: schedule._id } });
+    res.status(201).json({ success: true, data: schedule });
   } catch (err) {
-    console.error('POST /activity-schedule error:', err);
-    res.status(500).json({ success: false, message: 'Server error' });
+    console.error(err);
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// ── POST /activity-schedule/bulk — bulk upload via Excel/CSV ──────────────
-router.post('/bulk', authenticate, authorize('manager', 'admin', 'hr', 'super_admin'),
-  uploadBulk.single('file'), async (req, res) => {
-    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
+// ── BULK UPLOAD ──────────────────────────────────────────────────────────
+router.post('/bulk',
+  authenticate,
+  authorize('manager', 'admin', 'hr', 'super_admin'),
+  uploadBulk.single('file'),
+  async (req, res) => {
+    if (!req.file)
+      return res.status(400).json({ success: false, message: 'No file uploaded' });
 
     try {
       const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
       const sheet    = workbook.Sheets[workbook.SheetNames[0]];
       const rows     = XLSX.utils.sheet_to_json(sheet, { defval: '' });
 
-      if (!rows.length) return res.status(422).json({ success: false, message: 'Excel file is empty' });
+      if (!rows.length)
+        return res.status(422).json({ success: false, message: 'Excel file is empty' });
 
-      const errors   = [];
+      const errors = [];
       const toInsert = [];
 
       for (let i = 0; i < rows.length; i++) {
-        const row    = rows[i];
-        const rowNum = i + 2; // 1-indexed + header row
-        const title  = String(row['title'] || row['Title'] || '').trim();
-        const dateRaw = String(row['scheduled_date'] || row['Scheduled Date'] || row['date'] || '').trim();
-        const location       = String(row['location']        || row['Location']        || '').trim() || null;
-        const description    = String(row['description']     || row['Description']     || '').trim() || null;
-        const assigned_emp_id = String(row['assigned_emp_id'] || row['Assigned Emp ID'] || row['emp_id'] || '').trim() || null;
+        const row = rows[i];
+        const rowNum = i + 2;
 
-        if (!title)   { errors.push(`Row ${rowNum}: title is required`);          continue; }
-        if (!dateRaw) { errors.push(`Row ${rowNum}: scheduled_date is required`); continue; }
+        const title = String(row['Title'] || '').trim();
+        const description = String(row['Description'] || '').trim() || null;
+        const dateRaw = String(row['Scheduled Date'] || '').trim();
+        const location = String(row['Location'] || '').trim() || null;
+        const manager = String(row['Manager'] || '').trim() || null;
+        const assigned_emp_id = String(row['Assigned To (Employee)'] || '').trim() || null;
+        const assigned_by = String(row['Assigned By'] || '').trim() || null;
 
-        // Parse date — accept YYYY-MM-DD or Excel serial numbers
-        let scheduled_date = dateRaw;
-        if (/^\d{5}$/.test(dateRaw)) {
-          // Excel serial date
-          const jsDate = XLSX.SSF.parse_date_code(Number(dateRaw));
-          scheduled_date = `${jsDate.y}-${String(jsDate.m).padStart(2,'0')}-${String(jsDate.d).padStart(2,'0')}`;
-        } else if (!/^\d{4}-\d{2}-\d{2}$/.test(dateRaw)) {
-          errors.push(`Row ${rowNum}: scheduled_date must be YYYY-MM-DD (got: ${dateRaw})`);
-          continue;
-        }
+        if (!title) { errors.push(`Row ${rowNum}: Title required`); continue; }
+        if (!dateRaw) { errors.push(`Row ${rowNum}: Scheduled Date required`); continue; }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateRaw)) { errors.push(`Row ${rowNum}: date must be YYYY-MM-DD`); continue; }
 
         let assigned_to = null;
+        let employee_name = null;
+
         if (assigned_emp_id) {
-          const emp = await User.findOne({ emp_id: assigned_emp_id }).select('_id').lean();
-          if (!emp) { errors.push(`Row ${rowNum}: employee "${assigned_emp_id}" not found`); continue; }
+          const emp = await User.findOne({ emp_id: assigned_emp_id }).lean();
+          if (!emp) { errors.push(`Row ${rowNum}: employee not found`); continue; }
           assigned_to = emp._id;
+          employee_name = emp.name;
         }
 
         toInsert.push({
-          _id:            uuidv4(),
+          _id: uuidv4(),
           title,
           description,
-          scheduled_date,
+          scheduled_date: dateRaw,
           location,
           assigned_to,
-          created_by:     req.user.id,
+          employee_name,
+          manager_name: manager || req.user.name,
+          assigned_by: assigned_by || req.user.name,
+          created_by: req.user.id
         });
       }
 
@@ -233,79 +249,33 @@ router.post('/bulk', authenticate, authorize('manager', 'admin', 'hr', 'super_ad
       }
 
       res.json({
-        success:  true,
+        success: true,
         inserted: inserted.length,
-        skipped:  errors.length,
+        skipped: errors.length,
         errors,
-        message:  `${inserted.length} schedule(s) created${errors.length ? `, ${errors.length} row(s) skipped` : ''}`,
+        message: `${inserted.length} schedule(s) created`
       });
     } catch (err) {
-      console.error('POST /activity-schedule/bulk error:', err);
+      console.error(err);
       res.status(500).json({ success: false, message: 'Failed to parse file: ' + err.message });
     }
   }
 );
 
-// ── GET /activity-schedule/template — download blank Excel template ────────
-router.get('/template', authenticate, authorize('manager', 'admin', 'hr', 'super_admin'), (req, res) => {
-  const ws = XLSX.utils.aoa_to_sheet([
-    ['title', 'description', 'scheduled_date', 'location', 'assigned_emp_id'],
-    ['Block Visit - Araria', 'Awareness camp for MSMEs', '2025-04-10', 'Araria Block', 'EMP001'],
-    ['Training Workshop', 'Loan facilitation training', '2025-04-15', 'District HQ', ''],
-  ]);
-  ws['!cols'] = [{ wch: 30 }, { wch: 40 }, { wch: 18 }, { wch: 25 }, { wch: 18 }];
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Schedules');
-  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  res.setHeader('Content-Disposition', 'attachment; filename="schedule_template.xlsx"');
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.send(buf);
-});
-
-// ── PUT /activity-schedule/:id/initiate — employee initiates ─────────────
-router.put('/:id/initiate', authenticate, async (req, res) => {
-  try {
-    const schedule = await ActivitySchedule.findById(req.params.id);
-    if (!schedule) return res.status(404).json({ success: false, message: 'Schedule not found' });
-    if (schedule.status !== 'Pending')
-      return res.status(409).json({ success: false, message: 'Schedule is already initiated or completed' });
-
-    // If assigned to a specific employee, only that employee can initiate
-    if (schedule.assigned_to && schedule.assigned_to !== req.user.id) {
-      return res.status(403).json({ success: false, message: 'This schedule is assigned to another employee' });
-    }
-
-    schedule.status       = 'Initiated';
-    schedule.initiated_by = req.user.id;
-    schedule.initiated_at = new Date();
-    await schedule.save();
-
-    res.json({ success: true, data: { ...schedule.toObject(), id: schedule._id } });
-  } catch (err) {
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-// ── PUT /activity-schedule/:id/complete — employee completes ──────────────
+// ── COMPLETE schedule ────────────────────────────────────────────────────
 router.put('/:id/complete', authenticate, uploadAttach.array('attachments', 10), async (req, res) => {
   try {
     const schedule = await ActivitySchedule.findById(req.params.id);
     if (!schedule) return res.status(404).json({ success: false, message: 'Schedule not found' });
     if (schedule.status === 'Completed')
       return res.status(409).json({ success: false, message: 'Schedule already completed' });
-    if (schedule.status !== 'Initiated')
-      return res.status(409).json({ success: false, message: 'Initiate the schedule before completing' });
-    if (schedule.initiated_by.toString() !== req.user.id)
-      return res.status(403).json({ success: false, message: 'Only the employee who initiated can complete' });
 
     const { work_description, remarks } = req.body;
-    if (!work_description?.trim())
-      return res.status(422).json({ success: false, message: 'Work description is required' });
 
     schedule.status           = 'Completed';
     schedule.completed_by     = req.user.id;
     schedule.completed_at     = new Date();
-    schedule.work_description = work_description.trim();
+    schedule.work_description = work_description?.trim() || null;
     schedule.remarks          = remarks?.trim() || null;
     await schedule.save();
 
@@ -324,27 +294,35 @@ router.put('/:id/complete', authenticate, uploadAttach.array('attachments', 10),
     }
 
     const documents = await ScheduleDocument.find({ schedule_id: schedule._id }).lean();
-    res.json({ success: true, data: { ...schedule.toObject(), id: schedule._id, documents } });
+
+    res.json({
+      success: true,
+      data: { ...schedule.toObject(), id: schedule._id, documents }
+    });
   } catch (err) {
-    console.error('PUT /complete error:', err);
+    console.error(err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
-// ── DELETE /activity-schedule/:id — manager/admin deletes ────────────────
-router.delete('/:id', authenticate, authorize('manager', 'admin', 'hr', 'super_admin'), async (req, res) => {
-  try {
-    const schedule = await ActivitySchedule.findById(req.params.id);
-    if (!schedule) return res.status(404).json({ success: false, message: 'Schedule not found' });
+// ── DELETE schedule ──────────────────────────────────────────────────────
+router.delete('/:id',
+  authenticate,
+  authorize('manager', 'admin', 'hr', 'super_admin'),
+  async (req, res) => {
+    try {
+      const schedule = await ActivitySchedule.findById(req.params.id);
+      if (!schedule)
+        return res.status(404).json({ success: false, message: 'Schedule not found' });
 
-    // Files are on Cloudinary — just remove DB records
-    await ScheduleDocument.deleteMany({ schedule_id: req.params.id });
-    await schedule.deleteOne();
+      await ScheduleDocument.deleteMany({ schedule_id: req.params.id });
+      await schedule.deleteOne();
 
-    res.json({ success: true, message: 'Schedule deleted' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: 'Server error' });
+      res.json({ success: true, message: 'Schedule deleted' });
+    } catch (err) {
+      res.status(500).json({ success: false, message: 'Server error' });
+    }
   }
-});
+);
 
 module.exports = router;

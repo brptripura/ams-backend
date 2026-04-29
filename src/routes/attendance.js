@@ -35,7 +35,68 @@ const upload = multer({
 const notify = async (userId, title, message, type = 'info', recordId = null, link = null) => {
   await Notification.create({ _id: uuidv4(), user_id: userId, title, message, type, related_record_id: recordId, link });
 };
-
+const processMissedAutoCheckouts = async () => {
+  try {
+    const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+ 
+    // Find ALL Draft records where date < today (missed by the nightly cron)
+    const missed = await AttendanceRecord.find({
+      date:          { $lt: todayIST },
+      status:        'Draft',
+      checkout_time: null,
+      duty_type:     { $ne: 'Leave' },
+    }).lean();
+ 
+    if (!missed.length) return 0;
+ 
+    for (const record of missed) {
+      const checkinDT  = new Date(`${record.date}T${record.checkin_time}:00+05:30`);
+      // Use 23:58 as the auto-checkout time on the record's date
+      const checkoutDT = new Date(`${record.date}T23:58:00+05:30`);
+      const workedHrs  = Math.max(
+        0,
+        Math.round(((checkoutDT - checkinDT) / 3600000) * 100) / 100
+      );
+ 
+      await AttendanceRecord.findByIdAndUpdate(record._id, {
+        $set: {
+          checkout_time:    '23:58',
+          status:           'Approved',          // ← KEY FIX: was missing this
+          submitted_at:     new Date(),
+          is_auto_checkout: true,
+          checkout_remarks: 'Auto checkout — employee did not check out',
+          worked_hours:     workedHrs > 0 ? workedHrs : null,
+          leave_type:       workedHrs < 4 ? 'Half Day' : null,
+          leave_status:     workedHrs < 4 ? 'Pending'  : null,
+        },
+      });
+ 
+      if (record.manager_id) {
+        const emp = await User.findById(record.emp_id).select('name').lean();
+        await notify(
+          record.manager_id,
+          '⚠️ Missed Auto Checkout',
+          `${emp?.name || 'Employee'} forgot to check out on ${record.date}. Auto-processed.`,
+          'warning',
+          record._id,
+          '/manager/queue'
+        );
+      }
+ 
+      await AuditLog.create({
+        _id: uuidv4(), user_id: record.emp_id,
+        action: 'AUTO_CHECKOUT_MISSED', entity_type: 'attendance', entity_id: record._id,
+        new_value: 'Pending',
+      });
+    }
+ 
+    console.log(`[MissedAutoCheckout] Processed ${missed.length} records`);
+    return missed.length;
+  } catch (err) {
+    console.error('[MissedAutoCheckout] Error:', err.message);
+    return 0;
+  }
+};
 // ── Helper: build aggregation pipeline for record list ───────────────────
 const recordListPipeline = (matchFilter, sortStage, skip, limit) => [
   { $match: matchFilter },
@@ -55,17 +116,18 @@ const recordListPipeline = (matchFilter, sortStage, skip, limit) => [
   { $limit: limit },
 ];
 
-// ── GET /api/attendance ─────────────────────────────────────────────────
-// Employee: own records | Manager: team records | Admin: all records
 router.get('/', authenticate, async (req, res) => {
   try {
+    // Fix any Draft records from previous days before returning data
+  
+ 
     const { status, startDate, endDate, empId, onlyLeaves } = req.query;
     const page   = Math.max(1, parseInt(req.query.page)  || 1);
     const limit  = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
     const offset = (page - 1) * limit;
-
+ 
     const matchFilter = {};
-
+ 
     if (req.user.role === 'employee') {
       matchFilter.emp_id = req.user.id;
     } else if (req.user.role === 'manager') {
@@ -74,8 +136,7 @@ router.get('/', authenticate, async (req, res) => {
     } else if (['admin', 'hr', 'super_admin'].includes(req.user.role)) {
       if (empId) matchFilter.emp_id = empId;
     }
-    // admin / hr / super_admin sees all (with optional empId filter)
-
+ 
     if (onlyLeaves === 'true') matchFilter.leave_type = { $ne: null };
     if (status) {
       if (onlyLeaves === 'true') matchFilter.leave_status = status;
@@ -83,12 +144,12 @@ router.get('/', authenticate, async (req, res) => {
     }
     if (startDate) matchFilter.date = { ...matchFilter.date, $gte: startDate };
     if (endDate)   matchFilter.date = { ...matchFilter.date, $lte: endDate };
-
+ 
     const total   = await AttendanceRecord.countDocuments(matchFilter);
     const records = await AttendanceRecord.aggregate(
       recordListPipeline(matchFilter, { date: -1, created_at: -1 }, offset, limit)
     );
-
+ 
     res.json({
       success: true,
       data:    records.map(formatRecord),
@@ -99,7 +160,6 @@ router.get('/', authenticate, async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
-
 // ── GET /api/attendance/today ────────────────────────────────────────────
 router.get('/today', authenticate, async (req, res) => {
   try {
@@ -119,7 +179,17 @@ router.get('/today', authenticate, async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
-
+// POST /api/attendance/process-missed-checkouts
+// Used by server startup + admin manual trigger to fix missed auto-checkouts
+router.post('/process-missed-checkouts', authenticate, authorize('admin', 'hr', 'super_admin'), async (req, res) => {
+  try {
+    const count = await processMissedAutoCheckouts();
+    res.json({ success: true, message: `Processed ${count} missed checkout(s)` });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
 // ── GET /api/attendance/:id ──────────────────────────────────────────────
 router.get('/:id', authenticate, async (req, res) => {
   try {
@@ -168,7 +238,22 @@ router.post('/checkin', authenticate, authorize('employee'), upload.single('self
   try {
     const today    = istDateStr();
     const existing = await AttendanceRecord.findOne({ emp_id: req.user.id, date: today }).lean();
-    if (existing) return res.status(409).json({ success: false, message: 'Attendance already recorded for today' });
+
+if (existing) {
+
+  // Allow check-in if leave was rejected
+  if (existing.leave_type && existing.leave_status === "Rejected") {
+    await AttendanceRecord.deleteOne({ _id: existing._id });
+  }
+
+  else {
+    return res.status(409).json({
+      success: false,
+      message: "Attendance already recorded for today"
+    });
+  }
+
+}
 
     const { dutyType, sector, description, latitude, longitude, locationAddress, capturedAt, capturedDate } = req.body;
 
@@ -341,7 +426,9 @@ if (isEmergency) {
   else if (hoursElapsed < 4) {
     leaveType = "Half Day";
   }
-
+if (hoursElapsed < 6) {
+    leaveType = 'Half Day';       // 4–6 hours = Half Day
+  }
 }
 
 // Normal checkout
@@ -731,3 +818,4 @@ function formatRecord(r) {
 }
 
 module.exports = router;
+

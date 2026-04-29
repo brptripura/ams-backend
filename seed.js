@@ -10,39 +10,29 @@ const seed = async () => {
   await connectionPromise;
   console.log('🌱 Seeding database...');
 
-//   // Clear existing data
-//   // await Promise.all([
-//   //   AuditLog.deleteMany({}),
-//   //   Notification.deleteMany({}),
-//   //   AttendanceRecord.deleteMany({}),
-//   //   User.deleteMany({}),
-//   // ]);
-
   const hash = (pw) => bcrypt.hashSync(pw, 10);
   const pw = 'R@m%Brp@26';
 
   // ── IDs ──────────────────────────────────────────────────────────────
   const superAdminId = uuidv4();
   const adminId      = uuidv4();
- 
 
   // ── Users ─────────────────────────────────────────────────────────────
-    // ── Users ─────────────────────────────────────────────────────────────
   await User.insertMany([
     // Super Admin
     { _id: superAdminId, emp_id: 'SADM001', name: 'Super Admin', email: 'ajay.s@raminfo.com', password_hash: hash(pw), role: 'super_admin', department: 'Head Office Operations', manager_id: null, phone: '9000000001' },
-    
-    // Admin (Make sure there is no stray ' above this line)
+
+    // Admin
     { _id: adminId, emp_id: 'ADM001', name: 'Admin User', email: 'ajay.rges@gmail.com', password_hash: hash(pw), role: 'admin', department: 'Head Office Operations', manager_id: null, phone: '9000000002' },
   ]);
 
- 
+
   console.log('✅ Database seeded successfully!');
   console.log('\n📋 Login Credentials (all passwords: R@m%Brp@26)');
   console.log('─────────────────────────────────────────────────');
   console.log('  Super Admin: ajay.s@raminfo.com  (SADM001)');
-  console.log('  Admin:        ajay.rges@gmal.com      (ADM001)');
-  
+  console.log('  Admin:        ajay.rges@gmail.com      (ADM001)');
+
   console.log('─────────────────────────────────────────────────');
 };
 

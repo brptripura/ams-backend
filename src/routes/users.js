@@ -1,9 +1,11 @@
 const express    = require('express');
 const router     = express.Router();
 const bcrypt     = require('bcryptjs');
+const crypto     = require('crypto');
 const multer     = require('multer');
 const XLSX       = require('xlsx');
 const { v4: uuidv4 } = require('uuid');
+const resetTokens = require('../utils/resetTokens');
 const { body, validationResult } = require('express-validator');
 const { User, AttendanceRecord, Notification } = require('../models/database');
 const { authenticate, authorize } = require('../middleware/auth');
@@ -18,7 +20,7 @@ const validate = (req, res, next) => {
 };
 
 // GET /api/users - Admin/HR/Super Admin: all users | Manager: team
-router.get('/', authenticate, authorize('manager', 'admin', 'hr'), async (req, res) => {
+router.get('/', authenticate, authorize('manager', 'admin', 'hr', 'super_admin'), async (req, res) => {
   try {
     let users;
     if (['admin', 'hr', 'super_admin'].includes(req.user.role)) {
@@ -63,7 +65,6 @@ router.get('/locations', authenticate, async (req, res) => {
       User.distinct('assigned_block',    { assigned_block:    { $ne: null, $exists: true } }),
       User.distinct('assigned_district', { assigned_district: { $ne: null, $exists: true } }),
     ]);
-    // Combine unique location names for the dropdown
     const locations = [...new Set([...blocks.filter(Boolean), ...districts.filter(Boolean)])].sort();
     res.json({ success: true, data: locations });
   } catch (err) {
@@ -76,11 +77,9 @@ router.get('/locations', authenticate, async (req, res) => {
 router.get('/employees', authenticate, authorize('manager', 'admin', 'hr', 'super_admin'), async (req, res) => {
   try {
     let filter = { role: 'employee', is_active: 1 };
-    // If manager_id query param provided, filter by that manager
     if (req.query.manager_id) {
       filter.manager_id = req.query.manager_id;
     } else if (req.user.role === 'manager') {
-      // Managers see only their own team by default
       filter.manager_id = req.user.id;
     }
     const employees = await User
@@ -95,12 +94,12 @@ router.get('/employees', authenticate, authorize('manager', 'admin', 'hr', 'supe
   }
 });
 
+
 // POST /api/users - Admin / Super Admin creates user
-router.post('/', authenticate, authorize('admin'), [
+router.post('/', authenticate, authorize('admin', 'super_admin'), [
   body('name').notEmpty().withMessage('Name is required'),
   body('email').isEmail().withMessage('Valid email is required').normalizeEmail({ gmail_remove_dots: false, gmail_remove_subaddress: false, all_lowercase: true }),
   body('empId').notEmpty().withMessage('Employee ID is required'),
-  // password is now auto-generated — no longer required from the client
   body('role').isIn(['employee', 'manager', 'admin', 'hr', 'super_admin']).withMessage('Invalid role'),
   body('department').notEmpty().withMessage('Department is required'),
 ], validate, async (req, res) => {
@@ -118,21 +117,17 @@ router.post('/', authenticate, authorize('admin'), [
     const existingEmpId = await User.findOne({ emp_id: empId }).lean();
     if (existingEmpId) return res.status(409).json({ success: false, message: 'Employee ID already exists' });
 
-    const crypto     = require('crypto');
     const genToken   = () => crypto.randomBytes(32).toString('hex');
     const hashToken  = (t) => crypto.createHash('sha256').update(t).digest('hex');
 
-    // Email verification token (24h — user needs time to check email)
     const rawVerifyToken   = genToken();
     const hashedVerifyTok  = hashToken(rawVerifyToken);
     const verifyExpires    = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
-    // Password-set token (24h) — so user sets their own password on first login
     const rawResetToken    = genToken();
     const hashedResetTok   = hashToken(rawResetToken);
     const resetExpires     = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
-    // Temporary locked password — user must set their own via the reset link
     const tempPassword = `Tmp@${crypto.randomBytes(8).toString('hex')}`;
 
     const id = uuidv4();
@@ -155,8 +150,6 @@ router.post('/', authenticate, authorize('admin'), [
       pwd_reset_expires:    resetExpires,
     });
 
-    // Send ONE Firebase password reset email — serves as both verification + password setup
-    // When user clicks the link and sets password, they prove email ownership (= verified)
     const { sendPasswordResetEmail } = require('../utils/firebaseMailer');
     sendPasswordResetEmail(email, tempPassword).catch(err =>
       console.error('[User Create] Firebase welcome email failed:', err.message)
@@ -170,30 +163,25 @@ router.post('/', authenticate, authorize('admin'), [
   }
 });
 
-// PUT /api/users/:id/reset-password — must be before PUT /:id to avoid route shadowing
-router.put('/:id/reset-password', authenticate, authorize('admin'), async (req, res) => {
-  console.log('[reset-password] called by', req.user?.id, 'for target', req.params.id);
+// PUT /api/users/:id/reset-password
+router.put('/:id/reset-password', authenticate, authorize('admin', 'super_admin'), async (req, res) => {
   try {
     const target = await User.findById(req.params.id).select('-password_hash -email_verify_token -pwd_reset_token -phone_otp -login_attempts -login_locked_until').lean();
     if (!target) return res.status(404).json({ success: false, message: 'User not found' });
     if (String(req.params.id) === String(req.user.id))
       return res.status(400).json({ success: false, message: 'Use profile settings to change your own password' });
 
-    // Admin cannot reset password for admin or super_admin users — only Super Admin can
     if (req.user.role === 'admin' && ['admin', 'super_admin'].includes(target.role)) {
       return res.status(403).json({ success: false, message: 'Admins cannot reset passwords for admin or super admin accounts' });
     }
 
-    // Generate a secure reset token (5 min expiry) and send email
-    const crypto     = require('crypto');
     const genToken   = () => crypto.randomBytes(32).toString('hex');
     const hashToken  = (t) => crypto.createHash('sha256').update(t).digest('hex');
 
     const rawResetToken  = genToken();
     const hashedResetTok = hashToken(rawResetToken);
-    const resetExpires   = new Date(Date.now() + 5 * 60 * 1000); // 5 min
+    const resetExpires   = new Date(Date.now() + 30 * 60 * 1000); // 30 min
 
-    // Set a temporary locked password + reset token so user MUST use the link
     const tempPassword = `Tmp@${crypto.randomBytes(8).toString('hex')}`;
     await User.findByIdAndUpdate(req.params.id, {
       $set: {
@@ -206,7 +194,6 @@ router.put('/:id/reset-password', authenticate, authorize('admin'), async (req, 
     const FRONTEND = process.env.FRONTEND_URL || 'https://ams-frontend-web-niuz.onrender.com';
     const resetUrl = `${FRONTEND}/reset-password?token=${rawResetToken}`;
 
-    // Send reset email
     await sendMail(target.email, '[BRP AMS] Password Reset — Set Your New Password',
       `<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
       <body style="margin:0;padding:0;background:#f2f6f8;font-family:Arial,sans-serif;">
@@ -225,13 +212,13 @@ router.put('/:id/reset-password', authenticate, authorize('admin'), async (req, 
           Click the button below to set a new password.
         </p>
         <p style="color:#dc2626;font-size:13px;font-weight:700;">
-          ⚠️ This link expires in <strong>5 minutes</strong>. Act quickly!
+          This link expires in <strong>30 minutes</strong>.
         </p>
         <div style="text-align:center;margin:28px 0;">
           <a href="${resetUrl}"
             style="background:#1e3a8a;color:#fff;padding:14px 32px;border-radius:8px;
                    text-decoration:none;font-weight:700;font-size:15px;display:inline-block;">
-            🔑 Set New Password
+            Set New Password
           </a>
         </div>
         <p style="color:#94a3b8;font-size:11px;word-break:break-all;">Or copy: ${resetUrl}</p>
@@ -241,12 +228,12 @@ router.put('/:id/reset-password', authenticate, authorize('admin'), async (req, 
       </td></tr></table></body></html>`
     );
 
-    // In-app notification as well
+    // In-app notification
     try {
       await Notification.create({
         _id: uuidv4(), user_id: target._id,
         title: 'Password Reset by Admin',
-        message: 'Your password has been reset by an administrator. Check your email for the reset link (expires in 5 minutes).',
+        message: 'Your password has been reset by an administrator. Check your email for the reset link.',
         type: 'warning', is_read: 0,
       });
     } catch (_) {}
@@ -259,7 +246,7 @@ router.put('/:id/reset-password', authenticate, authorize('admin'), async (req, 
 });
 
 // PUT /api/users/:id - Update user
-router.put('/:id', authenticate, authorize('admin','super_admin'), async (req, res) => {
+router.put('/:id', authenticate, authorize('admin', 'super_admin'), async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select('-password_hash -email_verify_token -pwd_reset_token -phone_otp -login_attempts -login_locked_until').lean();
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
@@ -346,28 +333,7 @@ router.put('/:id', authenticate, authorize('admin','super_admin'), async (req, r
 });
 
 // DELETE /api/users/:id - Soft delete
-// router.delete('/:id', authenticate, authorize('admin','super_admin'), async (req, res) => {
-//   try {
-//     if (req.params.id === req.user.id)
-//       return res.status(400).json({ success: false, message: 'Cannot deactivate yourself' });
-
-//     // Admin cannot deactivate admin or super_admin users — only Super Admin can
-//     if (req.user.role === 'admin') {
-//       const target = await User.findById(req.params.id).select('role').lean();
-//       if (target && ['admin', 'super_admin'].includes(target.role)) {
-//         return res.status(403).json({ success: false, message: 'Admins cannot deactivate admin or super admin accounts' });
-//       }
-//     }
-
-//     await User.findByIdAndUpdate(req.params.id, { $set: { is_active: 0 } });
-//     res.json({ success: true, message: 'User deactivated' });
-//   } catch (err) {
-//     console.error(err);
-//     res.status(500).json({ success: false, message: 'Server error' });
-//   }
-// });
-//delete permenantly
-router.delete('/:id', authenticate, authorize('admin','super_admin'), async (req, res) => {
+router.delete('/:id', authenticate, authorize('admin', 'super_admin'), async (req, res) => {
   try {
     if (req.params.id === req.user.id)
       return res.status(400).json({ success: false, message: 'Cannot delete yourself' });
@@ -554,18 +520,72 @@ router.post('/bulk-upload', authenticate, authorize('super_admin', 'admin'), upl
       const phone    = String(row['Phone']       || row['phone']      || '').trim() || null;
       const block    = String(row['Block']       || row['block']      || '').trim() || null;
       const district = String(row['District']    || row['district']   || '').trim() || null;
-  // Manager: accepts emp_id (MGR001) OR full name
       const managerRef = String(
         row['managerId']    || row['ManagerId']    ||
         row['Manager Name'] || row['manager_name'] ||
         row['ManagerName']  || row['manager_id']   || ''
       ).trim() || null;
 
-      if (!empId || !name || !email || !dept) {
-        results.errors.push({ row: rowNum, reason: 'Missing required field (EmpId/Name/Email/Department)' });
-        results.skipped++;
-        continue;
-      }
+const name = String(
+  row['Name'] ||
+  row['name'] ||
+  ''
+).trim();
+
+const email = String(
+  row['Email'] ||
+  row['email'] ||
+  ''
+).trim().toLowerCase();
+
+const password = String(
+  row['Password'] ||
+  row['password'] ||
+  ''
+).trim();
+
+const role = String(
+  row['Role'] ||
+  row['role'] ||
+  'employee'
+).trim().toLowerCase();
+
+const dept = String(
+  row['Department'] ||
+  row['department'] ||
+  ''
+).trim();
+
+const phone = String(
+  row['Phone'] ||
+  row['phone'] ||
+  ''
+).trim() || null;
+
+const block = String(
+  row['Block'] ||
+  row['block'] ||
+  row['assignedBlock'] ||
+  row['AssignedBlock'] ||
+  ''
+).trim() || null;
+
+const district = String(
+  row['District'] ||
+  row['district'] ||
+  row['assignedDistrict'] ||
+  row['AssignedDistrict'] ||
+  ''
+).trim() || null;
+
+if (!empId || !name || !email || !dept) {
+  results.errors.push({
+    row: rowNum,
+    reason: 'Missing required field (EmpId/Name/Email/Department)'
+  });
+  results.skipped++;
+  continue;
+}
       if (!VALID_ROLES.includes(role)) {
         results.errors.push({ row: rowNum, reason: `Invalid role: ${role}` });
         results.skipped++;
