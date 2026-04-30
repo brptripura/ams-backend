@@ -107,7 +107,15 @@ router.get('/', authenticate, [
 
     const { start, end } = dateRangeFromFilter(filter, startDate, endDate);
     const matchFilter = { activity_date: { $gte: start, $lte: end } };
-    if (req.user.role === 'employee') matchFilter.user_id = req.user.id;
+
+    if (req.user.role === 'employee') {
+      matchFilter.user_id = req.user.id;
+    } else if (req.user.role === 'manager') {
+      const teamMembers = await User.find({ manager_id: req.user.id, is_active: 1 }, { _id: 1 }).lean();
+      if (teamMembers.length === 0)
+        return res.json({ success: true, data: [], total: 0, start, end });
+      matchFilter.user_id = { $in: teamMembers.map(m => String(m._id)) };
+    }
     if (block)        matchFilter.block_name   = block;
     if (sector)       matchFilter.sector       = sector;
     if (support_type) matchFilter.support_type = support_type;
@@ -167,12 +175,18 @@ router.get('/:id', authenticate, async (req, res) => {
   try {
     const rows = await Activity.aggregate([
       { $match: { _id: req.params.id } },
-      { $lookup: { from: 'users', localField: 'user_id', foreignField: '_id', as: 'user' } },
-      { $addFields: {
-          user_name: { $arrayElemAt: ['$user.name',   0] },
-          emp_id:    { $arrayElemAt: ['$user.emp_id', 0] },
-      }},
-      { $project: { user: 0 } },
+     { $lookup: { from: 'users', localField: 'assigned_to',  foreignField: '_id', as: 'assignee' } },
+{ $lookup: { from: 'users', localField: 'created_by',   foreignField: '_id', as: 'creator'  } },
+{ $lookup: { from: 'users', localField: 'manager_id',   foreignField: '_id', as: 'mgr'      } },
+{ $addFields: {
+    assigned_to_name:   { $arrayElemAt: ['$assignee.name',   0] },
+    assigned_to_emp_id: { $arrayElemAt: ['$assignee.emp_id', 0] },
+    created_by_name:    { $arrayElemAt: ['$creator.name',    0] },
+    created_by_role:    { $arrayElemAt: ['$creator.role',    0] },
+    manager_name:       { $arrayElemAt: ['$mgr.name',        0] },
+    manager_emp_id:     { $arrayElemAt: ['$mgr.emp_id',      0] },
+}},
+{ $project: { assignee: 0, creator: 0, mgr: 0 } },
     ]);
     if (!rows.length) return res.status(404).json({ success: false, message: 'Not found' });
     const row = rows[0];
@@ -280,15 +294,23 @@ router.get('/report/excel', authenticate, authorize('admin', 'manager', 'employe
   try {
     const XLSX = require('xlsx');
     const { filter = 'monthly', startDate, endDate } = req.query;
-    const isEmployee = req.user.role === 'employee';
-
-    const matchFilter = isEmployee ? { user_id: req.user.id } : {};
+    const matchFilter = {};
     if (filter !== 'all') {
       ({ start, end } = dateRangeFromFilter(filter, startDate, endDate));
       matchFilter.activity_date = { $gte: start, $lte: end };
     } else {
       start = 'All'; end = 'All';
     }
+    // In report/excel and report/pdf routes, replace:
+if (req.user.role === 'employee') {
+  matchFilter.user_id = req.user.id;
+} else if (req.user.role === 'manager') {
+  const teamMembersExcel = await User.find(
+    { manager_id: req.user.id, is_active: 1 }
+  ).distinct('_id');
+  matchFilter.user_id = { $in: teamMembersExcel };
+}
+    // hr / super_admin / admin: see all
 
     const rows = await Activity.aggregate([
       { $match: matchFilter },
@@ -345,77 +367,88 @@ router.get('/report/pdf', authenticate, authorize('admin', 'manager', 'employee'
   try {
     const PDFDocument = require('pdfkit');
     const { filter = 'monthly', startDate, endDate } = req.query;
-    const isEmployee = req.user.role === 'employee';
-
-    const matchFilter = isEmployee ? { user_id: req.user.id } : {};
+    const matchFilter = {};
     if (filter !== 'all') {
       ({ start, end } = dateRangeFromFilter(filter, startDate, endDate));
       matchFilter.activity_date = { $gte: start, $lte: end };
     } else {
       start = 'All'; end = 'All';
     }
+    if (req.user.role === 'employee') {
+      matchFilter.user_id = req.user.id;
+    } else if (req.user.role === 'manager') {
+      const teamMembers = await User.find({ manager_id: req.user.id, is_active: 1 }).distinct('_id');
+      matchFilter.user_id = { $in: teamMembers };
+    }
 
     const rows = await Activity.aggregate([
       { $match: matchFilter },
       { $lookup: { from: 'users', localField: 'user_id', foreignField: '_id', as: 'user' } },
-      { $addFields: { officer: { $arrayElemAt: ['$user.name', 0] } } },
+      { $addFields: {
+          officer:  { $arrayElemAt: ['$user.name',   0] },
+          emp_code: { $arrayElemAt: ['$user.emp_id', 0] },
+      }},
       { $project: { user: 0 } },
       { $sort: { activity_date: -1 } },
       { $limit: 500 },
     ]);
-    const blockStats = await Activity.aggregate([
-      { $match: matchFilter },
-      { $group: { _id: '$block_name', total: { $sum: 1 } } },
-      { $project: { _id: 0, block_name: '$_id', total: 1 } },
-      { $sort: { total: -1 } },
-    ]);
-    const filename = filter === 'all' ? 'activity_report_all.pdf' : `activity_report_${start}_${end}.pdf`;
-    const doc = new PDFDocument({ margin: 40, size: 'A4' });
-    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+    const generatedDate = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' });
+    const pdfFilename   = filter === 'all' ? 'activity_report_all.pdf' : `activity_report_${matchFilter.activity_date?.$gte}_${matchFilter.activity_date?.$lte}.pdf`;
+
+    const doc     = new PDFDocument({ margin: 0, size: 'A4', layout: 'landscape' });
+    res.setHeader('Content-Disposition', `attachment; filename=${pdfFilename}`);
     res.setHeader('Content-Type', 'application/pdf');
     doc.pipe(res);
 
-    doc.fontSize(18).font('Helvetica-Bold').text('BRP — Activity Report', { align: 'center' });
-    const periodLabel = matchFilter.activity_date ? `${matchFilter.activity_date.$gte} to ${matchFilter.activity_date.$lte}` : 'All time';
-    doc.fontSize(11).font('Helvetica').text(`Period: ${periodLabel}`, { align: 'center' });
-    doc.moveDown(0.5);
-    doc.moveTo(40, doc.y).lineTo(555, doc.y).stroke();
-    doc.moveDown(0.5);
+    const PAGE_W = 841.89, PAGE_H = 595.28, MARGIN = 30;
+    const BLUE = '#1a6aa5', BLUE_H = '#155a8a', ROW_ALT = '#f0f6fb', WHITE = '#ffffff', BORDER = '#d0e4f0';
 
-    doc.fontSize(13).font('Helvetica-Bold').text('Block-wise Summary');
-    doc.moveDown(0.3);
-    const colW = [200, 80];
-    const startX = 40;
-    let y = doc.y;
-    doc.fontSize(10).font('Helvetica-Bold').text('Block', startX, y).text('Total', startX + colW[0], y);
-    y += 18;
-    doc.font('Helvetica');
-    for (const b of blockStats) {
-      doc.text(b.block_name || '', startX, y).text(String(b.total), startX + colW[0], y);
-      y += 16;
-      if (y > 750) { doc.addPage(); y = 40; }
-    }
-    doc.moveDown(1);
+    doc.rect(0, 0, PAGE_W, 72).fill(BLUE);
+    doc.fillColor(WHITE).fontSize(20).font('Helvetica-Bold').text('BRP — Activity Report', MARGIN, 14, { width: PAGE_W - MARGIN * 2, align: 'center' });
+    const subtitle = `Period: ${filter === 'all' ? 'All Time' : filter.charAt(0).toUpperCase() + filter.slice(1)}  ·  Generated: ${generatedDate}  ·  Total: ${rows.length}`;
+    doc.fontSize(10).font('Helvetica').text(subtitle, MARGIN, 42, { width: PAGE_W - MARGIN * 2, align: 'center' });
 
-    doc.fontSize(13).font('Helvetica-Bold').text('Activity Details', 40, doc.y);
-    doc.moveDown(0.3);
-    const cols    = [70, 100, 120, 80, 100, 80];
-    const headers = ['Date', 'Officer', 'MSME Name', 'Sector', 'Support', 'Block'];
-    y = doc.y;
-    doc.fontSize(9).font('Helvetica-Bold');
-    let x = 40;
-    headers.forEach((h, i) => { doc.text(h, x, y, { width: cols[i] }); x += cols[i]; });
-    y += 16;
-    doc.font('Helvetica').fontSize(8);
-    for (const r of rows) {
-      if (y > 760) { doc.addPage(); y = 40; }
-      x = 40;
-      [r.activity_date, r.officer, r.msme_name, r.sector, r.support_type, r.block_name].forEach((v, i) => {
-        doc.text(String(v || ''), x, y, { width: cols[i] - 2, ellipsis: true });
-        x += cols[i];
+    const cols   = [68, 52, 80, 110, 105, 80, 90, 75, 112];
+    const heads  = ['Date', 'Emp ID', 'Officer', 'MSME Name', 'Udyam No', 'Sector', 'Support Type', 'Block', 'Remarks'];
+    const ROW_H  = 22, HEAD_H = 26;
+    let y = 82;
+
+    const drawHead = (yPos) => {
+      let x = MARGIN;
+      doc.rect(MARGIN, yPos, PAGE_W - MARGIN * 2, HEAD_H).fill(BLUE_H);
+      doc.fillColor(WHITE).fontSize(8).font('Helvetica-Bold');
+      heads.forEach((h, i) => { doc.text(h, x + 4, yPos + 8, { width: cols[i] - 6 }); x += cols[i]; });
+    };
+    drawHead(y);
+    y += HEAD_H;
+
+    doc.font('Helvetica').fontSize(7.5);
+    rows.forEach((r, idx) => {
+      if (y + ROW_H > PAGE_H - 20) {
+        doc.addPage({ size: 'A4', layout: 'landscape', margin: 0 });
+        y = 20;
+        drawHead(y);
+        y += HEAD_H;
+        doc.font('Helvetica').fontSize(7.5);
+      }
+      doc.rect(MARGIN, y, PAGE_W - MARGIN * 2, ROW_H).fill(idx % 2 === 0 ? WHITE : ROW_ALT);
+      doc.moveTo(MARGIN, y + ROW_H).lineTo(PAGE_W - MARGIN, y + ROW_H).strokeColor(BORDER).lineWidth(0.4).stroke();
+
+      const vals = [r.activity_date || '', r.emp_code || '', r.officer || '', r.msme_name || '', r.udyam_number || '', r.sector || '', r.support_type || '', r.block_name || '', r.remarks || '—'];
+      let cx = MARGIN;
+      doc.fillColor('#1a2744');
+      vals.forEach((v, i) => { doc.text(String(v), cx + 4, y + 7, { width: cols[i] - 6, ellipsis: true, lineBreak: false }); cx += cols[i]; });
+
+      let vx = MARGIN;
+      cols.forEach((w, i) => {
+        if (i > 0) doc.moveTo(vx, y).lineTo(vx, y + ROW_H).strokeColor(BORDER).lineWidth(0.3).stroke();
+        vx += w;
       });
-      y += 14;
-    }
+      y += ROW_H;
+    });
+
+    const tableH = y - 82;
+    doc.rect(MARGIN, 82, PAGE_W - MARGIN * 2, tableH).strokeColor(BLUE).lineWidth(0.8).stroke();
     doc.end();
   } catch (err) {
     console.error('PDF ERROR:', err.message, err.stack);

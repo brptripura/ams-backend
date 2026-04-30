@@ -39,6 +39,21 @@ const userSchema = new mongoose.Schema({
   // ── Account lockout ─────────────────────────────────────────────────
   failed_login_attempts: { type: Number, default: 0 },
   login_locked_until:    { type: Date, default: null },
+  // ── Scan papers (array, max 2 per month) ────────────────────────────
+  scan_papers: {
+    type: [{
+      path:        { type: String, required: true },   // Cloudinary URL
+      month:       { type: String, required: true },   // "2026-04"
+      month_label: { type: String, default: null },    // "April 2026"
+      file_name:   { type: String, default: null },    // original filename
+      file_index:  { type: Number, default: 0 },       // 0 or 1
+      uploaded_at: { type: Date,   default: Date.now },
+    }],
+    default: [],
+  },
+  // Legacy single-scan fields kept for backwards compat
+  scan_paper_path:     { type: String, default: null },
+  scan_paper_uploaded: { type: String, default: null },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 userSchema.index({ manager_id: 1 });
@@ -92,6 +107,16 @@ const attendanceRecordSchema = new mongoose.Schema({
   hr_remark:            { type: String, default: null },
   hr_actioned_by:       { type: String, ref: 'User', default: null },
   hr_actioned_at:       { type: Date, default: null },
+  overridden_by:        { type: String, enum: ['hr', 'super_admin', null], default: null },
+override_remark:      { type: String, default: null },
+signed_reports: [{
+    path:        String,
+    name:        String,
+    month:       String,   // "YYYY-MM"
+    month_label: String,   // "April 2026"
+    uploaded_at: Date,
+    uploaded_by: String,   // user _id
+  }]
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 attendanceRecordSchema.index({ emp_id: 1, date: 1 }, { unique: true });

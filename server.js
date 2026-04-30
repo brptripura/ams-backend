@@ -1,6 +1,5 @@
 const dns = require('node:dns');
 dns.setServers(['8.8.8.8', '1.1.1.1']);
-// require('dns').setDefaultResultOrder('ipv4first');
 require('dotenv').config();
 
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
@@ -21,9 +20,8 @@ const mongoSanitize = require('express-mongo-sanitize');
 const cron          = require('node-cron');
 
 const app  = express();
-const PORT = process.env.PORT ;
+const PORT = process.env.PORT;
 
-// Render (and most hosts) use a reverse proxy — trust it for rate-limiting & IP detection
 app.set('trust proxy', 1);
 
 // ── Security & Middleware ─────────────────────────────────────────────────
@@ -49,14 +47,15 @@ app.use(helmet({
   hidePoweredBy: true,
   frameguard: { action: 'deny' },
 }));
+
 const ALLOWED_ORIGINS = [
   process.env.FRONTEND_URL || 'http://localhost:3000',
-  process.env.BACKEND_URL  || 'https://ams-backend-1-yvgm.onrender.com', // self-hosted pages (reset password)
-  'http://localhost:3000',   // local dev
-  'http://localhost:3001',   // local dev fallback
-  'http://localhost:4001',   // local dev port active
-  'capacitor://localhost',   // Android Capacitor app
-  'http://localhost',        // Android WebView fallback
+  process.env.BACKEND_URL  || 'https://ams-backend-1-yvgm.onrender.com',
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://localhost:4001',
+  'capacitor://localhost',
+  'http://localhost',
   'https://localhost',
 ];
 app.use(cors({
@@ -95,13 +94,8 @@ app.use(morgan('dev'));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 app.use("/uploads", express.static("uploads"));
-// Sanitize req.body against NoSQL injection ($, .)
-// Note: In Express 5, req.query and req.params are read-only (getter/Proxy).
-// Reassigning them breaks internal route matching. URL path params and query
-// strings don't need NoSQL sanitization — only user-supplied JSON bodies do.
 app.use((req, res, next) => {
   if (req.body) req.body = mongoSanitize.sanitize(req.body, { replaceWith: '_' });
-  // Sanitize query params: strip any keys containing $ or . to prevent NoSQL injection
   if (req.query && typeof req.query === 'object') {
     for (const key of Object.keys(req.query)) {
       if (typeof req.query[key] === 'string') {
@@ -112,13 +106,10 @@ app.use((req, res, next) => {
   next();
 });
 
-// Global rate limit (prevents DDoS / scraping)
 const limiter = rateLimit({ windowMs: 2 * 60 * 1000, max: 200, standardHeaders: true, legacyHeaders: false });
 app.use('/api/', limiter);
 
-// ── Auto-checkout cron (23:58 every day) ─────────────────────────────────
-// Finds all Draft records (checked-in but not checked-out) for today and
-// auto-checks them out with a remark, then notifies each employee's manager.
+// ── Models ────────────────────────────────────────────────────────────────
 const { connectionPromise, AttendanceRecord, User, Notification, RevokedToken } = require('./src/models/database');
 const { v4: uuidv4 } = require('uuid');
 
@@ -126,23 +117,18 @@ cron.schedule('28 18 * * *', async () => {   // 18:28 UTC = 23:58 IST
   console.log('[AutoCheckout] Nightly cron triggered');
   try {
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-    const unchecked = await AttendanceRecord.find({
-      date: today,
-      status: 'Draft',
-      checkout_time: null,
-    }).lean();
- 
+    const unchecked = await AttendanceRecord.find({ date: today, status: 'Draft', checkout_time: null }).lean();
     console.log(`[AutoCheckout] ${unchecked.length} unchecked for ${today}`);
- 
+
     for (const record of unchecked) {
       const checkinDT  = new Date(`${record.date}T${record.checkin_time}:00+05:30`);
       const checkoutDT = new Date(`${record.date}T23:58:00+05:30`);
       const workedHrs  = Math.round(((checkoutDT - checkinDT) / 3600000) * 100) / 100;
- 
+
       await AttendanceRecord.findByIdAndUpdate(record._id, {
         $set: {
           checkout_time:    '23:58',
-          status:           'Approved',    // ← KEY: was causing Draft to stay
+          status:           'Approved',
           submitted_at:     new Date(),
           is_auto_checkout: true,
           checkout_remarks: 'Auto checkout — employee did not check out',
@@ -151,7 +137,6 @@ cron.schedule('28 18 * * *', async () => {   // 18:28 UTC = 23:58 IST
           leave_status:     workedHrs < 4 ? 'Pending'  : null,
         },
       });
- 
       if (record.manager_id) {
         const emp = await User.findById(record.emp_id).select('name').lean();
         await Notification.create({
@@ -161,21 +146,95 @@ cron.schedule('28 18 * * *', async () => {   // 18:28 UTC = 23:58 IST
           message:           `${emp?.name || 'Employee'} was auto-checked out at 23:58 on ${record.date}. Please review.`,
           type:              'warning',
           related_record_id: record._id,
+          link:              '/manager/queue',
+        });
+      }
+
+      await require('./src/models/database').AuditLog?.create?.({
+        _id:         uuidv4(),
+        user_id:     record.emp_id,
+        action:      'MISSED_CHECKOUT_AUTO_FLAGGED',
+        entity_type: 'attendance',
+        entity_id:   record._id,
+      }).catch(() => {}); // non-fatal
+    }
+
+    console.log(`[MissedCheckout Cron] Done — ${unchecked.length} record(s) flagged.`);
+  } catch (err) {
+    console.error('[MissedCheckout Cron] Error:', err.message);
+  }
+}, {
+  timezone: 'Asia/Kolkata',
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CRON 2 — Hourly reminder (18:00–23:00 IST): Remind employees to check out
+//
+// Sends a notification reminder only — does NOT flag or block anyone.
+// The midnight cron above handles the actual flagging.
+// ─────────────────────────────────────────────────────────────────────────────
+cron.schedule('0 18-23 * * *', async () => {
+  console.log('[MissedCheckout Reminder] Cron triggered');
+  try {
+    const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+    const unchecked = await AttendanceRecord.find({
+      date:          todayIST,
+      status:        'Draft',
+      checkin_time:  { $ne: null },
+      checkout_time: null,
+    }).lean();
+
+    console.log(`[MissedCheckout Reminder] ${unchecked.length} employees still not checked out for ${todayIST}`);
+
+    for (const record of unchecked) {
+      const checkinDT    = new Date(`${record.date}T${record.checkin_time}:00+05:30`);
+      const nowIST       = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      const hoursElapsed = (nowIST - checkinDT) / 3600000;
+
+      if (hoursElapsed < 6) continue;
+
+      // Throttle — don't spam more than once every 2 hours
+      const recentNotif = await Notification.findOne({
+        user_id:    record.emp_id,
+        type:       'checkout_reminder',
+        created_at: { $gte: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+      }).lean();
+
+      if (recentNotif) continue;
+
+      await Notification.create({
+        _id:               uuidv4(),
+        user_id:           record.emp_id,
+        title:             '⏰ Please Check Out',
+        message:           `You checked in at ${record.checkin_time} and haven't checked out yet. Check out before midnight to avoid a missed-checkout flag.`,
+        type:              'checkout_reminder',
+        related_record_id: record._id,
+        link:              '/employee/attendance',
+      });
+
+      if (record.manager_id) {
+        const emp = await User.findById(record.emp_id).select('name').lean();
+        await Notification.create({
+          _id:               uuidv4(),
+          user_id:           record.manager_id,
+          title:             '⚠️ Employee Not Checked Out',
+          message:           `${emp?.name || 'An employee'} checked in at ${record.checkin_time} on ${record.date} but has not checked out yet (${Math.floor(hoursElapsed)}h elapsed).`,
+          type:              'warning',
+          related_record_id: record._id,
+          link:              '/manager/queue',
         });
       }
     }
     console.log('[AutoCheckout] Done');
   } catch (err) {
-    console.error('[AutoCheckout] Error:', err.message);
+    console.error('[MissedCheckout Reminder] Error:', err.message);
   }
 }, {
-  timezone: 'Asia/Kolkata'   // ← ADD THIS: tell node-cron to use IST
+  timezone: 'Asia/Kolkata',
 });
 
 // ── Revoked-token pruning ─────────────────────────────────────────────────
-// JWTs expire after 24 h, so any token revoked more than 24 h ago is safe to
-// delete — the original token would be rejected by jwt.verify() anyway.
-
 const pruneRevokedTokens = async () => {
   try {
     const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -185,7 +244,6 @@ const pruneRevokedTokens = async () => {
   }
 };
 
-// Run once at startup (after DB connection), then hourly
 connectionPromise.then(async () => {
   pruneRevokedTokens();
   setInterval(pruneRevokedTokens, 60 * 60 * 1000);
@@ -243,9 +301,9 @@ connectionPromise.then(async () => {
 const attendanceRouter = require('./src/routes/attendance');
 app.use('/api/auth',              require('./src/routes/auth'));
 app.use('/api/attendance',        attendanceRouter);
-app.use('/api/users',        require('./src/routes/users'));
-app.use('/api/reports',      require('./src/routes/reports'));
-app.use('/api/notifications',require('./src/routes/notifications'));
+app.use('/api/users',             require('./src/routes/users'));
+app.use('/api/reports',           require('./src/routes/reports'));
+app.use('/api/notifications',     require('./src/routes/notifications'));
 app.use('/api/activity',          require('./src/routes/activity'));
 app.use('/api/activity-schedule', require('./src/routes/activity-schedule'));
 app.use('/api/msme',              require('./src/routes/msme'));
@@ -349,13 +407,12 @@ app.post('/api/admin/seed', async (req, res) => {
   }
 });
 
-// ── Temporary email debug endpoint (remove after testing) ─────────────────
+// ── Temporary email debug endpoint ────────────────────────────────────────
 app.post('/api/admin/test-email', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ success: false, message: 'email required' });
   const results = {};
 
-  // Test 1: Firebase password reset
   try {
     const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY;
     if (FIREBASE_API_KEY) {
@@ -373,7 +430,6 @@ app.post('/api/admin/test-email', async (req, res) => {
     results.firebase = { error: err.message };
   }
 
-  // Test 2: SMTP
   try {
     const { sendMail, mode } = require('./src/utils/mailer');
     results.mailer_mode = mode;
@@ -400,7 +456,6 @@ app.listen(PORT, () => {
   console.log(`\n🚀 BRP Attendance API running on http://localhost:${PORT}`);
   console.log(`📊 Health: http://localhost:${PORT}/api/health`);
   console.log(`\nRun 'npm run seed' to populate demo data\n`);
-
 });
 
 module.exports = app;
