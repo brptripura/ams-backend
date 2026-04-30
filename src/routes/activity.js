@@ -91,9 +91,11 @@ router.get('/', authenticate, [
   query('block').optional().trim(),
   query('sector').optional().trim(),
   query('support_type').optional().trim(),
-], validate, async (req, res) => {
+  query('user_id').optional().trim(),
+  query('manager_id').optional().trim(),
+], validate, authorize('admin', 'manager', 'hr', 'employee'), async (req, res) => {
   try {
-    const { filter = 'monthly', startDate, endDate, block, sector, support_type, limit = 100, offset = 0 } = req.query;
+    const { filter = 'monthly', startDate, endDate, block, sector, support_type, user_id, manager_id, limit = 100, offset = 0 } = req.query;
 
     const safeParam = /^[a-zA-Z0-9 \-\/]*$/;
     if (block && !safeParam.test(block))
@@ -109,21 +111,50 @@ router.get('/', authenticate, [
     if (block)        matchFilter.block_name   = block;
     if (sector)       matchFilter.sector       = sector;
     if (support_type) matchFilter.support_type = support_type;
-    const total = await Activity.countDocuments(matchFilter);
-    const rows = await Activity.aggregate([
-      { $match: matchFilter },
-      { $lookup: { from: 'users',             localField: 'user_id', foreignField: '_id', as: 'user' } },
-      { $lookup: { from: 'activitydocuments', localField: '_id',     foreignField: 'activity_id', as: 'docs' } },
-      { $addFields: {
-          user_name: { $arrayElemAt: ['$user.name',   0] },
-          emp_id:    { $arrayElemAt: ['$user.emp_id', 0] },
-          doc_count: { $size: '$docs' },
-      }},
-      { $project: { user: 0, docs: 0 } },
-      { $sort: { activity_date: -1, created_at: -1 } },
-      { $skip: Number(offset) },
-      { $limit: Number(limit) },
-    ]);
+    if (user_id) matchFilter.user_id = user_id;
+
+    let total;
+    let rows;
+
+    if (manager_id) {
+      const pipeline = [
+        { $match: matchFilter },
+        { $lookup: { from: 'users', localField: 'user_id', foreignField: '_id', as: 'user' } },
+        { $unwind: '$user' },
+        { $match: { 'user.manager_id': manager_id } },
+        { $facet: {
+            metadata: [{ $count: 'total' }],
+            data: [
+              { $addFields: { user_name: '$user.name', emp_id: '$user.emp_id' } },
+              { $lookup: { from: 'activitydocuments', localField: '_id', foreignField: 'activity_id', as: 'docs' } },
+              { $addFields: { doc_count: { $size: '$docs' } } },
+              { $project: { user: 0, docs: 0 } },
+              { $sort: { activity_date: -1, created_at: -1 } },
+              { $skip: Number(offset) },
+              { $limit: Number(limit) },
+            ],
+        }},
+      ];
+      const results = await Activity.aggregate(pipeline);
+      total = results[0].metadata[0]?.total || 0;
+      rows  = results[0].data;
+    } else {
+      total = await Activity.countDocuments(matchFilter);
+      rows  = await Activity.aggregate([
+        { $match: matchFilter },
+        { $lookup: { from: 'users',             localField: 'user_id', foreignField: '_id', as: 'user' } },
+        { $lookup: { from: 'activitydocuments', localField: '_id',     foreignField: 'activity_id', as: 'docs' } },
+        { $addFields: {
+            user_name: { $arrayElemAt: ['$user.name',   0] },
+            emp_id:    { $arrayElemAt: ['$user.emp_id', 0] },
+            doc_count: { $size: '$docs' },
+        }},
+        { $project: { user: 0, docs: 0 } },
+        { $sort: { activity_date: -1, created_at: -1 } },
+        { $skip: Number(offset) },
+        { $limit: Number(limit) },
+      ]);
+    }
     res.json({ success: true, data: rows, total, start, end });
   } catch (err) {
     console.error(err);
@@ -156,7 +187,7 @@ router.get('/:id', authenticate, async (req, res) => {
 });
 
 // ── GET /api/activity/stats/heatmap ───────────────────────────────────
-router.get('/stats/heatmap', authenticate, authorize('admin', 'manager'), [
+router.get('/stats/heatmap', authenticate, authorize('admin', 'manager', 'hr'), [
   query('filter').optional().isIn(['weekly', 'biweekly', 'monthly']),
   query('startDate').optional().isISO8601(),
   query('endDate').optional().isISO8601(),
@@ -178,7 +209,7 @@ router.get('/stats/heatmap', authenticate, authorize('admin', 'manager'), [
 });
 
 // ── GET /api/activity/stats/block-wise ────────────────────────────────
-router.get('/stats/block-wise', authenticate, authorize('admin', 'manager'), [
+router.get('/stats/block-wise', authenticate, authorize('admin', 'manager', 'hr'), [
   query('filter').optional().isIn(['weekly', 'biweekly', 'monthly']),
   query('startDate').optional().isISO8601(),
   query('endDate').optional().isISO8601(),
@@ -210,7 +241,7 @@ router.get('/stats/block-wise', authenticate, authorize('admin', 'manager'), [
 });
 
 // ── GET /api/activity/stats/compliance ───────────────────────────────
-router.get('/stats/compliance', authenticate, authorize('admin', 'manager'), async (req, res) => {
+router.get('/stats/compliance', authenticate, authorize('admin', 'manager', 'hr'), async (req, res) => {
   try {
     const now        = new Date();
     const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;

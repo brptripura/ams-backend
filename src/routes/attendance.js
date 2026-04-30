@@ -134,6 +134,7 @@ router.get('/', authenticate, async (req, res) => {
       matchFilter.manager_id = req.user.id;
       if (empId) matchFilter.emp_id = empId;
     } else if (['admin', 'hr', 'super_admin'].includes(req.user.role)) {
+      if (req.query.managerId) matchFilter.manager_id = req.query.managerId;
       if (empId) matchFilter.emp_id = empId;
     }
  
@@ -227,7 +228,7 @@ router.get('/:id', authenticate, async (req, res) => {
 });
 
 // ── POST /api/attendance/checkin ─────────────────────────────────────────
-router.post('/checkin', authenticate, authorize('employee'), upload.single('selfie'), [
+router.post('/checkin', authenticate, authorize('employee', 'manager', 'admin', 'hr'), upload.single('selfie'), [
   body('dutyType').isIn(['Office Duty', 'On Duty']),
   body('latitude').isFloat(),
   body('longitude').isFloat(),
@@ -305,8 +306,8 @@ if (existing) {
 });
 
 // ── POST /api/attendance/apply-leave ─────────────────────────────────────
-// Employee applies for a full-day leave (no check-in required), supports date range
-router.post('/apply-leave', authenticate, authorize('employee'), [
+// User applies for a full-day leave (no check-in required), supports date range
+router.post('/apply-leave', authenticate, authorize('employee', 'manager', 'admin', 'hr'), [
   body('date').isDate().withMessage('Valid start date required'),
   body('endDate').optional().isDate().withMessage('Valid end date required'),
   body('leaveType').isIn(['Sick Leave', 'Casual Leave', 'Half Day', 'Emergency Leave']).withMessage('Invalid leave type'),
@@ -395,7 +396,7 @@ router.post('/apply-leave', authenticate, authorize('employee'), [
 });
 
 // ── PUT /api/attendance/:id/checkout ─────────────────────────────────────
-router.put('/:id/checkout', authenticate, authorize('employee'), upload.single('checkoutSelfie'), async (req, res) => {
+router.put('/:id/checkout', authenticate, authorize('employee', 'manager', 'admin', 'hr'), upload.single('checkoutSelfie'), async (req, res) => {
   try {
     const isEmergency = req.body.emergency === "true" || req.body.emergency === true;
     const record = await AttendanceRecord.findOne({ _id: req.params.id, emp_id: req.user.id }).lean();
@@ -496,7 +497,7 @@ else {
 });
 
 // ── PUT /api/attendance/:id/approve ──────────────────────────────────────
-router.put('/:id/approve', authenticate, authorize('manager', 'admin'), async (req, res) => {
+router.put('/:id/approve', authenticate, authorize('manager', 'admin', 'hr'), async (req, res) => {
   try {
     const { remark } = req.body;
     const record = await AttendanceRecord.findById(req.params.id).lean();
@@ -509,7 +510,9 @@ router.put('/:id/approve', authenticate, authorize('manager', 'admin'), async (r
         return res.status(400).json({ success: false, message: 'Record cannot be approved in current state' });
     }
 
-    const isAdmin      = req.user.role === 'admin';
+    const isAdmin   = ['admin', 'super_admin'].includes(req.user.role);
+    const isHR      = req.user.role === 'hr';
+
     const updateFields = {
       status:       'Approved',
       manager_remark: remark || '',
@@ -517,6 +520,12 @@ router.put('/:id/approve', authenticate, authorize('manager', 'admin'), async (r
       actioned_at:  new Date(),
     };
     if (isAdmin) updateFields.admin_remark = remark || '';
+    if (isHR) {
+      updateFields.hr_override    = true;
+      updateFields.hr_remark      = remark || '';
+      updateFields.hr_actioned_by = req.user.id;
+      updateFields.hr_actioned_at = new Date();
+    }
     if (record.leave_type) updateFields.leave_status = 'Approved';
 
     await AttendanceRecord.findByIdAndUpdate(record._id, { $set: updateFields });
@@ -525,9 +534,14 @@ router.put('/:id/approve', authenticate, authorize('manager', 'admin'), async (r
       ? `Your ${record.leave_type} request for ${record.date} has been approved`
       : `Your attendance for ${record.date} has been approved`;
     await notify(record.emp_id, notifTitle, notifMsg, 'success', record._id, '/employee/history');
+
+    let auditAction = 'APPROVE';
+    if (isAdmin) auditAction = 'ADMIN_OVERRIDE_APPROVE';
+    if (isHR)    auditAction = 'HR_OVERRIDE_APPROVE';
+
     await AuditLog.create({
       _id: uuidv4(), user_id: req.user.id,
-      action: isAdmin ? 'ADMIN_OVERRIDE_APPROVE' : 'APPROVE',
+      action: auditAction,
       entity_type: 'attendance', entity_id: record._id,
       old_value: record.status, new_value: 'Approved',
     });
@@ -541,7 +555,7 @@ router.put('/:id/approve', authenticate, authorize('manager', 'admin'), async (r
 });
 
 // ── PUT /api/attendance/:id/reject ───────────────────────────────────────
-router.put('/:id/reject', authenticate, authorize('manager', 'admin'), [
+router.put('/:id/reject', authenticate, authorize('manager', 'admin', 'hr'), [
   body('remark').notEmpty().withMessage('Rejection reason is required'),
 ], async (req, res) => {
   const errors = validationResult(req);
@@ -555,7 +569,17 @@ router.put('/:id/reject', authenticate, authorize('manager', 'admin'), [
     if (req.user.role === 'manager' && record.manager_id !== req.user.id)
       return res.status(403).json({ success: false, message: 'Not your team member' });
 
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    const isHR    = req.user.role === 'hr';
+
     const rejectFields = { status: 'Rejected', manager_remark: remark, actioned_by: req.user.id, actioned_at: new Date() };
+    if (isAdmin) rejectFields.admin_remark = remark;
+    if (isHR) {
+      rejectFields.hr_override    = true;
+      rejectFields.hr_remark      = remark;
+      rejectFields.hr_actioned_by = req.user.id;
+      rejectFields.hr_actioned_at = new Date();
+    }
     if (record.leave_type) rejectFields.leave_status = 'Rejected';
     await AttendanceRecord.findByIdAndUpdate(record._id, { $set: rejectFields });
     const rejectTitle = record.leave_type ? `Leave Rejected ✗` : 'Attendance Rejected ✗';
@@ -563,8 +587,12 @@ router.put('/:id/reject', authenticate, authorize('manager', 'admin'), [
       ? `Your ${record.leave_type} request for ${record.date} was rejected: ${remark}`
       : `Your attendance for ${record.date} was rejected: ${remark}`;
     await notify(record.emp_id, rejectTitle, rejectMsg, 'error', record._id, '/employee/history');
+
+    let auditAction = 'REJECT';
+    if (isAdmin || isHR) auditAction = isHR ? 'HR_OVERRIDE_REJECT' : 'ADMIN_OVERRIDE_REJECT';
+
     await AuditLog.create({
-      _id: uuidv4(), user_id: req.user.id, action: 'REJECT',
+      _id: uuidv4(), user_id: req.user.id, action: auditAction,
       entity_type: 'attendance', entity_id: record._id,
       old_value: record.status, new_value: 'Rejected',
     });
@@ -625,7 +653,7 @@ router.put('/:id/hr-override', authenticate, authorize('hr'), [
 });
 
 // ── PUT /api/attendance/:id/leave-request ────────────────────────────────
-router.put('/:id/leave-request', authenticate, authorize('employee'), [
+router.put('/:id/leave-request', authenticate, authorize('employee', 'manager', 'admin', 'hr'), [
   body('leaveType').isIn(['Sick Leave', 'Casual Leave', 'Half Day', 'Emergency Leave']).withMessage('Invalid leave type'),
   body('reason').notEmpty().withMessage('Reason is required'),
 ], async (req, res) => {
@@ -684,6 +712,9 @@ router.get('/stats/summary', authenticate, async (req, res) => {
     } else if (req.user.role === 'manager') {
       matchFilter.manager_id = req.user.id;
       if (empId) matchFilter.emp_id = empId;
+    } else if (['admin', 'hr', 'super_admin'].includes(req.user.role)) {
+      if (req.query.managerId) matchFilter.manager_id = req.query.managerId;
+      if (empId) matchFilter.emp_id = empId;
     }
     if (startDate) matchFilter.date = { ...matchFilter.date, $gte: startDate };
     if (endDate)   matchFilter.date = { ...matchFilter.date, $lte: endDate };
@@ -717,7 +748,7 @@ router.get('/stats/summary', authenticate, async (req, res) => {
 });
 
 // ── PUT /api/attendance/:id/reapply ──────────────────────────────────────
-router.put('/:id/reapply', authenticate, authorize('employee'), upload.array('reapplyDocs', 10), async (req, res) => {
+router.put('/:id/reapply', authenticate, authorize('employee', 'manager', 'admin', 'hr'), upload.array('reapplyDocs', 10), async (req, res) => {
   try {
     const { reason } = req.body;
     if (!reason?.trim()) return res.status(400).json({ success: false, message: 'Reason is required' });

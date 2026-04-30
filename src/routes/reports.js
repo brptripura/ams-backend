@@ -9,14 +9,7 @@ const mongoose     = require('mongoose');
 const { AttendanceRecord, User } = require('../models/database');
 const { authenticate, authorize } = require('../middleware/auth');
 
-// ── Helper: safe ObjectId conversion ─────────────────────────────────────
-const toObjectId = (id) => {
-  try {
-    return new mongoose.Types.ObjectId(String(id));
-  } catch (e) {
-    return id; // fallback to raw string if invalid
-  }
-};
+// ── Helper removed as IDs are strings ─────────────────────────────────────
 
 // ── GET /api/reports/export ──────────────────────────────────────────────
 router.get('/export', authenticate, authorize('manager', 'admin', 'hr', 'employee'), async (req, res) => {
@@ -31,13 +24,17 @@ router.get('/export', authenticate, authorize('manager', 'admin', 'hr', 'employe
     // ── Role-based filtering ──────────────────────────────────────────
     if (req.user.role === 'employee') {
       // Employee can ONLY see their own records
-      matchFilter.emp_id = toObjectId(req.user.id);
+      matchFilter.emp_id = req.user.id;
       console.log('Employee filter applied — emp_id:', matchFilter.emp_id);
     } else if (req.user.role === 'manager') {
-      matchFilter.manager_id = toObjectId(req.user.id);
+      matchFilter.manager_id = req.user.id;
     } else if (empId) {
       // Admin/HR can optionally filter by a specific employee
-      matchFilter.emp_id = toObjectId(empId);
+      matchFilter.emp_id = empId;
+    }
+    
+    if (['admin', 'hr', 'super_admin'].includes(req.user.role) && req.query.managerId) {
+      matchFilter.manager_id = req.query.managerId;
     }
 
     if (startDate) matchFilter.date = { ...matchFilter.date, $gte: startDate };
@@ -799,18 +796,43 @@ router.get('/export',
 // ── dashboard-stats ───────────────────────────────────────────────────────────
 router.get('/dashboard-stats', authenticate, async (req, res) => {
   try {
+    const { startDate, endDate, empId } = req.query;
     const today     = new Date().toISOString().split('T')[0];
     const thisMonth = today.substring(0, 7);
     const empFilter = {};
-    if (req.user.role === 'employee')     empFilter.emp_id     = toObjId(req.user.id);
-    else if (req.user.role === 'manager') empFilter.manager_id = toObjId(req.user.id);
-    const monthStart = `${thisMonth}-01`;
-    const [year, month] = thisMonth.split('-').map(Number);
-    const nextMonth = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, '0')}-01`;
+
+    if (req.user.role === 'employee') {
+      empFilter.emp_id     = req.user.id;
+    } else if (req.user.role === 'manager') {
+      empFilter.manager_id = req.user.id;
+    } else if (['admin', 'hr', 'super_admin'].includes(req.user.role) && req.query.managerId) {
+      empFilter.manager_id = req.query.managerId;
+    }
+    if (empId) empFilter.emp_id = empId;
+
+    let dateFilter = {};
+    if (startDate || endDate) {
+      if (startDate) dateFilter.$gte = startDate;
+      if (endDate)   dateFilter.$lte = endDate;
+    } else {
+      const monthStart = `${thisMonth}-01`;
+      const [year, month] = thisMonth.split('-').map(Number);
+      const nextMonth = month === 12
+        ? `${year + 1}-01-01`
+        : `${year}-${String(month + 1).padStart(2, '0')}-01`;
+      dateFilter = { $gte: monthStart, $lt: nextMonth };
+    }
 
     const monthlyResult = await AttendanceRecord.aggregate([
-      { $match: { date: { $gte: monthStart, $lt: nextMonth }, ...empFilter } },
-      { $group: { _id: null, total: { $sum: 1 }, approved: { $sum: { $cond: [{ $eq: ['$status', 'Approved'] }, 1, 0] } }, pending: { $sum: { $cond: [{ $eq: ['$status', 'Pending'] }, 1, 0] } }, rejected: { $sum: { $cond: [{ $eq: ['$status', 'Rejected'] }, 1, 0] } }, on_duty: { $sum: { $cond: [{ $eq: ['$duty_type', 'On Duty'] }, 1, 0] } } } },
+      { $match: { date: dateFilter, ...empFilter } },
+      { $group: {
+          _id:      null,
+          total:    { $sum: 1 },
+          approved: { $sum: { $cond: [{ $eq: ['$status',    'Approved'] }, 1, 0] } },
+          pending:  { $sum: { $cond: [{ $eq: ['$status',    'Pending']  }, 1, 0] } },
+          rejected: { $sum: { $cond: [{ $eq: ['$status',    'Rejected'] }, 1, 0] } },
+          on_duty:  { $sum: { $cond: [{ $eq: ['$duty_type', 'On Duty']  }, 1, 0] } },
+      }},
       { $project: { _id: 0 } },
     ]);
     const monthly = monthlyResult[0] || { total: 0, approved: 0, pending: 0, rejected: 0, on_duty: 0 };
