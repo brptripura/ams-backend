@@ -318,8 +318,6 @@ router.put('/change-password', authenticate, [
 });
 
 // ── POST /api/auth/forgot-password ───────────────────────────────────────
-// Uses Firebase to send password reset email (works on Render via HTTPS)
-// Falls back to custom token flow if Firebase is not configured
 router.post('/forgot-password', forgotLimiter, [
   body('email').isEmail().normalizeEmail({ gmail_remove_dots: false, all_lowercase: true }).withMessage('Valid email required'),
 ], validate, async (req, res) => {
@@ -332,8 +330,6 @@ router.post('/forgot-password', forgotLimiter, [
 
     if (!user) return res.json(OK);
 
-    // Always use custom token flow with SMTP (branded email from noreply.brpams@gmail.com)
-    // SMTP → Resend → Firebase fallback is handled inside sendMail()
     const rawToken  = generateToken();
     const hashedTok = hashToken(rawToken);
     const expires   = new Date(Date.now() + 30 * 60 * 1000); // 30 min
@@ -342,28 +338,31 @@ router.post('/forgot-password', forgotLimiter, [
       $set: { pwd_reset_token: hashedTok, pwd_reset_expires: expires }
     });
 
-    const FRONTEND = process.env.FRONTEND_URL || 'https://ams-frontend-web-niuz.onrender.com';
-    const resetUrl = `${FRONTEND}/reset-password?token=${rawToken}`;
+    // Link always points to THIS backend — no FRONTEND_URL dependency.
+    // The GET /api/auth/reset-password route below serves a self-contained HTML form.
+    const BACKEND  = (process.env.BACKEND_URL || 'https://brp-mobile.onrender.com').replace(/\/$/, '');
+    const resetUrl = `${BACKEND}/api/auth/reset-password?token=${rawToken}`;
+
     await sendMail(user.email, '[BRP AMS] Reset Your Password',
       emailLayout('Password Reset Request', `
         <p style="color:#475569;font-size:14px;line-height:1.6;">
           Hi <strong>${user.name}</strong>, we received a request to reset your AMS password.
         </p>
         <p style="color:#475569;font-size:14px;line-height:1.6;">
-          Click the button below. This link expires in <strong>5 minutes</strong>.
+          Click the button below. The link expires in <strong>30 minutes</strong>.
         </p>
         <div style="text-align:center;margin:28px 0;">
           <a href="${resetUrl}"
-            style="background:#21879d;color:#fff;padding:14px 32px;border-radius:8px;
+            style="background:#1E3A8A;color:#fff;padding:14px 32px;border-radius:8px;
                    text-decoration:none;font-weight:700;font-size:15px;display:inline-block;">
             Reset Password
           </a>
         </div>
         <p style="color:#94a3b8;font-size:12px;word-break:break-all;">
-          Or copy: ${resetUrl}
+          Or copy this link: ${resetUrl}
         </p>
         <p style="color:#dc2626;font-size:13px;">
-          If you didn't request this, ignore this email. Your password won't change.
+          If you didn't request this, ignore this email — your password will not change.
         </p>
       `),
       { type: 'PASSWORD_RESET' }
@@ -375,6 +374,240 @@ router.post('/forgot-password', forgotLimiter, [
     console.error(err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
+});
+
+// ── GET /api/auth/reset-password — Self-contained HTML reset form ─────────
+// Email links point here (backend URL — always correct).
+// Validates the token, then serves a full HTML page with the new-password form.
+// On submit the form POSTs to /api/auth/reset-password (JSON) and shows the result.
+router.get('/reset-password', async (req, res) => {
+  const token   = (req.query.token || '').trim();
+  // Where to send user after successful reset — default to known frontend URL or backend root
+  const FRONTEND  = (process.env.FRONTEND_URL  || '').replace(/\/$/, '');
+  const loginUrl  = FRONTEND ? `${FRONTEND}/login` : '/';
+
+  const html = (opts) => `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reset Password — BRP AMS</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{min-height:100vh;display:flex;align-items:center;justify-content:center;
+       background:linear-gradient(145deg,#0A1F44 0%,#1E3A8A 60%,#1e40af 100%);
+       font-family:Arial,Helvetica,sans-serif;padding:20px}
+  .card{background:#fff;border-radius:20px;box-shadow:0 24px 64px rgba(0,0,0,.25);
+        width:100%;max-width:440px;overflow:hidden}
+  .hdr{background:linear-gradient(135deg,#1E3A8A,#2563EB);padding:28px 32px;text-align:center}
+  .hdr h1{color:#fff;font-size:20px;font-weight:800;margin:0 0 4px}
+  .hdr p{color:rgba(255,255,255,.7);font-size:13px;margin:0}
+  .hdr .ico{width:52px;height:52px;border-radius:16px;background:rgba(255,255,255,.15);
+             display:flex;align-items:center;justify-content:center;margin:0 auto 14px;font-size:24px}
+  .body{padding:28px 32px}
+  label{display:block;font-size:11px;font-weight:700;color:#475569;
+        text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+  input{width:100%;border:1.5px solid #e2e8f0;border-radius:10px;padding:12px 14px;
+        font-size:14px;color:#0f172a;outline:none;font-family:inherit;box-sizing:border-box}
+  input:focus{border-color:#1E3A8A;box-shadow:0 0 0 3px rgba(30,58,138,.15)}
+  .err{font-size:12px;color:#DC2626;margin:6px 0 0;display:none}
+  .hint{font-size:11px;color:#64748b;background:#F8FAFC;border-radius:8px;
+        padding:10px 12px;margin:16px 0 20px;line-height:1.8}
+  .hint strong{color:#1E3A8A}
+  .btn{width:100%;padding:14px;border-radius:10px;border:none;font-size:15px;font-weight:700;
+       cursor:pointer;font-family:inherit;transition:.2s}
+  .btn-primary{background:linear-gradient(135deg,#1E3A8A,#2563EB);color:#fff;
+               box-shadow:0 4px 14px rgba(30,58,138,.3)}
+  .btn-primary:hover{opacity:.9}
+  .btn-primary:disabled{opacity:.6;cursor:not-allowed}
+  .btn-outline{background:none;color:#1E3A8A;border:1.5px solid #e2e8f0;margin-top:10px}
+  .pw-wrap{position:relative}
+  .pw-toggle{position:absolute;right:12px;top:50%;transform:translateY(-50%);
+             background:none;border:none;cursor:pointer;color:#64748b;font-size:16px;padding:4px}
+  .alert{border-radius:10px;padding:14px 16px;font-size:14px;margin-bottom:16px;display:none}
+  .alert-err{background:#FEF2F2;color:#DC2626;border:1px solid #FCA5A5}
+  .alert-ok{background:#F0FDF4;color:#15803D;border:1px solid #86EFAC}
+  .mb16{margin-bottom:16px}
+  .mb8{margin-bottom:8px}
+  .center{text-align:center}
+  .big{font-size:48px;margin-bottom:16px}
+  .title{font-size:18px;font-weight:800;color:#1E3A8A;margin-bottom:8px}
+  .sub{font-size:14px;color:#64748b;line-height:1.6;margin-bottom:24px}
+</style>
+</head><body>
+<div class="card">
+  <div class="hdr">
+    <div class="ico">${opts.icon}</div>
+    <h1>${opts.title}</h1>
+    <p>BRP Attendance Management System</p>
+  </div>
+  <div class="body">
+    ${opts.body}
+  </div>
+</div>
+<script>
+  function togglePw(id,btn){
+    var i=document.getElementById(id);
+    if(i.type==='password'){i.type='text';btn.textContent='🙈';}
+    else{i.type='password';btn.textContent='👁️';}
+  }
+</script>
+</body></html>`;
+
+  // ── Token missing ──────────────────────────────────────────────────────
+  if (!token) {
+    return res.status(400).send(html({
+      icon: '❌', title: 'Invalid Link',
+      body: `<div class="center">
+        <div class="big">❌</div>
+        <div class="title">Link Invalid</div>
+        <p class="sub">This password reset link is missing the reset token. Please request a new one.</p>
+        <a href="${loginUrl}" style="display:block;width:100%;padding:14px;border-radius:10px;
+           background:linear-gradient(135deg,#1E3A8A,#2563EB);color:#fff;text-decoration:none;
+           font-weight:700;font-size:15px;text-align:center;box-sizing:border-box;">
+          ← Back to Sign In
+        </a>
+      </div>`,
+    }));
+  }
+
+  // ── Validate token ────────────────────────────────────────────────────
+  let user;
+  try {
+    const hashedTok = hashToken(token);
+    user = await User.findOne({
+      pwd_reset_token:   hashedTok,
+      pwd_reset_expires: { $gt: new Date() },
+      is_active: { $ne: 0 },
+    }).lean();
+  } catch (e) {
+    console.error('[ResetPage] DB error:', e.message);
+  }
+
+  if (!user) {
+    return res.status(400).send(html({
+      icon: '⏰', title: 'Link Expired',
+      body: `<div class="center">
+        <div class="big">⏰</div>
+        <div class="title">Link Expired or Already Used</div>
+        <p class="sub">This password reset link has expired (links are valid for 30 minutes) or has already been used.<br><br>Please request a new one from the Sign In page.</p>
+        <a href="${loginUrl}" style="display:block;width:100%;padding:14px;border-radius:10px;
+           background:linear-gradient(135deg,#1E3A8A,#2563EB);color:#fff;text-decoration:none;
+           font-weight:700;font-size:15px;text-align:center;box-sizing:border-box;">
+          ← Back to Sign In
+        </a>
+      </div>`,
+    }));
+  }
+
+  // ── Valid token — show form ────────────────────────────────────────────
+  const BACKEND = (process.env.BACKEND_URL || 'https://brp-mobile.onrender.com').replace(/\/$/, '');
+  res.send(html({
+    icon: '🔐', title: 'Set New Password',
+    body: `
+      <p style="font-size:14px;color:#64748b;text-align:center;margin-bottom:24px;line-height:1.6">
+        Hi <strong style="color:#1E3A8A">${user.name}</strong>, enter your new password below.
+      </p>
+
+      <div id="alertErr" class="alert alert-err"></div>
+      <div id="alertOk"  class="alert alert-ok" style="display:none">
+        ✅ Password reset successfully! Redirecting to Sign In…
+      </div>
+
+      <form id="resetForm">
+        <div class="mb16">
+          <label>New Password <span style="color:#DC2626">*</span></label>
+          <div class="pw-wrap">
+            <input id="pw" type="password" placeholder="Min 8 chars, upper, number, symbol" required />
+            <button type="button" class="pw-toggle" onclick="togglePw('pw',this)">👁️</button>
+          </div>
+          <div id="pwErr" class="err"></div>
+        </div>
+
+        <div class="mb8">
+          <label>Confirm Password <span style="color:#DC2626">*</span></label>
+          <input id="pw2" type="password" placeholder="Repeat new password" required />
+          <div id="pw2Err" class="err"></div>
+        </div>
+
+        <div class="hint">
+          <strong>Password must have:</strong><br>
+          ✓ 8+ characters &nbsp;·&nbsp; ✓ Uppercase (A–Z) &nbsp;·&nbsp; ✓ Lowercase (a–z)<br>
+          ✓ Number (0–9) &nbsp;·&nbsp; ✓ Symbol (@$!%*?&#)
+        </div>
+
+        <button type="submit" class="btn btn-primary" id="submitBtn">Reset Password</button>
+        <a href="${loginUrl}"
+           style="display:block;width:100%;padding:14px;border-radius:10px;background:none;
+                  color:#1E3A8A;border:1.5px solid #e2e8f0;margin-top:10px;text-align:center;
+                  font-size:15px;font-weight:700;text-decoration:none;box-sizing:border-box">
+          ← Back to Sign In
+        </a>
+      </form>
+
+      <script>
+        var TOKEN = ${JSON.stringify(token)};
+        var API   = ${JSON.stringify(BACKEND + '/api/auth/reset-password')};
+        var LOGIN = ${JSON.stringify(loginUrl)};
+
+        function validate(pw) {
+          if (pw.length < 8)            return 'Minimum 8 characters required';
+          if (!/[A-Z]/.test(pw))        return 'At least one uppercase letter (A-Z)';
+          if (!/[a-z]/.test(pw))        return 'At least one lowercase letter (a-z)';
+          if (!/[0-9]/.test(pw))        return 'At least one number (0-9)';
+          if (!/[!@#$%^&*()_\\-+=@$!%*?&#^,.?":{}|<>]/.test(pw))
+                                        return 'At least one special character (@#$!%^&*...)';
+          return '';
+        }
+
+        document.getElementById('resetForm').addEventListener('submit', async function(e) {
+          e.preventDefault();
+          var pw  = document.getElementById('pw').value;
+          var pw2 = document.getElementById('pw2').value;
+          var err = validate(pw);
+          var pE  = document.getElementById('pwErr');
+          var p2E = document.getElementById('pw2Err');
+          var aE  = document.getElementById('alertErr');
+          var aO  = document.getElementById('alertOk');
+
+          pE.style.display  = 'none';
+          p2E.style.display = 'none';
+          aE.style.display  = 'none';
+          aO.style.display  = 'none';
+
+          if (err) { pE.textContent = '⚠️ ' + err; pE.style.display = 'block'; return; }
+          if (pw !== pw2) { p2E.textContent = '⚠️ Passwords do not match'; p2E.style.display = 'block'; return; }
+
+          var btn = document.getElementById('submitBtn');
+          btn.disabled = true;
+          btn.textContent = 'Resetting…';
+
+          try {
+            var res = await fetch(API, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token: TOKEN, newPassword: pw })
+            });
+            var data = await res.json();
+            if (res.ok && data.success) {
+              document.getElementById('resetForm').style.display = 'none';
+              aO.style.display = 'block';
+              setTimeout(function(){ window.location.href = LOGIN; }, 2500);
+            } else {
+              aE.textContent = '⚠️ ' + (data.message || 'Reset failed. Please request a new link.');
+              aE.style.display = 'block';
+              btn.disabled = false;
+              btn.textContent = 'Reset Password';
+            }
+          } catch(ex) {
+            aE.textContent = '⚠️ Network error. Please try again.';
+            aE.style.display = 'block';
+            btn.disabled = false;
+            btn.textContent = 'Reset Password';
+          }
+        });
+      </script>
+    `,
+  }));
 });
 
 // ── POST /api/auth/reset-password-otp ─────────────────────────────────
