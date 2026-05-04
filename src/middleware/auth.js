@@ -24,7 +24,9 @@ const authenticate = async (req, res, next) => {
       .select('_id emp_id name email role department manager_id phone is_active pwd_changed_at')
       .lean();
 
-    if (!user || !user.is_active) {
+    // Handle both numeric (1/0) and boolean (true/false) is_active values
+    const active = user?.is_active;
+    if (!user || active === 0 || active === false || active === null || active === undefined) {
       return res.status(401).json({ success: false, message: 'User not found or inactive' });
     }
 

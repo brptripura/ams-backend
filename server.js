@@ -50,7 +50,7 @@ app.use(helmet({
 
 const ALLOWED_ORIGINS = [
   process.env.FRONTEND_URL || 'http://localhost:3000',
-  process.env.BACKEND_URL  || 'https://ams-backend-1-yvgm.onrender.com',
+  process.env.BACKEND_URL  || 'https://brp-mobile.onrender.com',
   'http://localhost:3000',
   'http://localhost:3001',
   'http://localhost:4001',

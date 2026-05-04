@@ -143,12 +143,13 @@ router.post('/register-super-admin', [
 
 // ── POST /api/auth/login ──────────────────────────────────────────────────
 router.post('/login', loginLimiter, [
-  body('email').isEmail().normalizeEmail(),
+  body('email').isEmail().normalizeEmail({ gmail_remove_dots: false, all_lowercase: true }),
   body('password').notEmpty(),
 ], validate, async (req, res) => {
   try {
     const { email, password } = req.body;
-    const user = await User.findOne({ email, is_active: 1 }).lean();
+    // is_active: { $ne: 0 } handles both numeric 1 and boolean true stored in older records
+    const user = await User.findOne({ email, is_active: { $ne: 0 } }).lean();
 
     // Account lockout check
     if (user && user.login_locked_until && new Date(user.login_locked_until) > new Date()) {
@@ -320,11 +321,11 @@ router.put('/change-password', authenticate, [
 // Uses Firebase to send password reset email (works on Render via HTTPS)
 // Falls back to custom token flow if Firebase is not configured
 router.post('/forgot-password', forgotLimiter, [
-  body('email').isEmail().normalizeEmail().withMessage('Valid email required'),
+  body('email').isEmail().normalizeEmail({ gmail_remove_dots: false, all_lowercase: true }).withMessage('Valid email required'),
 ], validate, async (req, res) => {
   try {
     const { email } = req.body;
-    const user = await User.findOne({ email, is_active: 1 }).lean();
+    const user = await User.findOne({ email, is_active: { $ne: 0 } }).lean();
 
     // Always same response — prevents email enumeration
     const OK = { success: true, message: 'If that email is registered you will receive a password reset email shortly.' };
@@ -335,7 +336,7 @@ router.post('/forgot-password', forgotLimiter, [
     // SMTP → Resend → Firebase fallback is handled inside sendMail()
     const rawToken  = generateToken();
     const hashedTok = hashToken(rawToken);
-    const expires   = new Date(Date.now() + 5 * 60 * 1000); // 5 min
+    const expires   = new Date(Date.now() + 30 * 60 * 1000); // 30 min
 
     await User.findByIdAndUpdate(user._id, {
       $set: { pwd_reset_token: hashedTok, pwd_reset_expires: expires }
@@ -377,87 +378,47 @@ router.post('/forgot-password', forgotLimiter, [
 });
 
 // ── POST /api/auth/reset-password-otp ─────────────────────────────────
-// After user clicks the reset link, the frontend calls this to send an OTP
-// to the user's email for additional verification before allowing password change.
+// Kept for backwards compatibility — just validates the token is still valid
 router.post('/reset-password-otp', otpLimiter, [
   body('token').notEmpty().withMessage('Reset token is required'),
 ], validate, async (req, res) => {
   try {
-    const { token } = req.body;
-    const hashedTok = hashToken(token);
-
+    const hashedTok = hashToken(req.body.token);
     const user = await User.findOne({
       pwd_reset_token:   hashedTok,
       pwd_reset_expires: { $gt: new Date() },
-      is_active: 1,
+      is_active: { $ne: 0 },
     }).lean();
-
     if (!user)
       return res.status(400).json({ success: false, message: 'Reset link is invalid or has expired.' });
-
-    const otp       = generateOTP();
-    const hashedOtp = hashToken(otp);
-    const expires   = new Date(Date.now() + 5 * 60 * 1000); // 5 min
-
-    await User.findByIdAndUpdate(user._id, {
-      $set: { pwd_reset_otp: hashedOtp, pwd_reset_otp_expires: expires }
-    });
-
-    await sendMail(user.email, '[BRP AMS] Password Reset OTP',
-      emailLayout('Password Reset Verification Code', `
-        <p style="color:#475569;font-size:14px;line-height:1.6;">
-          Hi <strong>${user.name}</strong>, enter this code to verify your identity before resetting your password.
-        </p>
-        <div style="text-align:center;margin:28px 0;">
-          <span style="font-size:42px;font-weight:900;letter-spacing:14px;color:#0b1e3b;">${otp}</span>
-        </div>
-        <p style="color:#475569;font-size:13px;text-align:center;">
-          This code expires in <strong>5 minutes</strong>.
-        </p>
-        <p style="color:#dc2626;font-size:12px;">Never share this code with anyone.</p>
-      `),
-      { type: 'PASSWORD_RESET' }
-    );
-
-    res.json({ success: true, message: 'OTP sent to your email' });
+    res.json({ success: true, message: 'Token valid' });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
 // ── POST /api/auth/reset-password ────────────────────────────────────────
+// Accepts: { token, newPassword }  — no OTP required (token is cryptographically secure + 30-min expiry)
 router.post('/reset-password', [
   body('token').notEmpty().withMessage('Reset token is required'),
-  body('otp').isLength({ min: 6, max: 6 }).isNumeric().withMessage('OTP must be 6 digits'),
   body('newPassword')
     .isLength({ min: 8 }).withMessage('Password must be at least 8 characters')
     .matches(/[A-Z]/).withMessage('Must contain at least one uppercase letter')
     .matches(/[0-9]/).withMessage('Must contain at least one number')
-    .matches(/[!@#$%^&*(),.?":{}|<>]/).withMessage('Must contain at least one special character'),
+    .matches(/[!@#$%^&*()_\-+=@$!%*?&#^,.?":{}|<>]/).withMessage('Must contain at least one special character'),
 ], validate, async (req, res) => {
   try {
-    const { token, otp, newPassword } = req.body;
+    const { token, newPassword } = req.body;
     const hashedTok = hashToken(token);
 
     const user = await User.findOne({
       pwd_reset_token:   hashedTok,
       pwd_reset_expires: { $gt: new Date() },
-      is_active: 1,
+      is_active: { $ne: 0 },
     }).lean();
 
     if (!user)
       return res.status(400).json({ success: false, message: 'Reset link is invalid or has expired.' });
-
-    // Validate OTP
-    if (!user.pwd_reset_otp || !user.pwd_reset_otp_expires)
-      return res.status(400).json({ success: false, message: 'No OTP found. Please request an OTP first.' });
-
-    if (new Date() > user.pwd_reset_otp_expires)
-      return res.status(400).json({ success: false, message: 'OTP expired. Please request a new one.' });
-
-    if (hashToken(otp) !== user.pwd_reset_otp)
-      return res.status(400).json({ success: false, message: 'Invalid OTP' });
 
     await User.findByIdAndUpdate(user._id, {
       $set: {
@@ -467,6 +428,9 @@ router.post('/reset-password', [
         pwd_reset_otp:         null,
         pwd_reset_otp_expires: null,
         pwd_changed_at:        new Date(),
+        failed_login_attempts: 0,
+        login_locked_until:    null,
+        is_active:             1,
       }
     });
     await AuditLog.create({ _id: uuidv4(), user_id: user._id, action: 'RESET_PASSWORD', ip_address: req.ip });
@@ -568,7 +532,7 @@ router.post('/resend-verification', authenticate, async (req, res) => {
       $set: { email_verify_token: hashedTok, email_verify_expires: expires }
     });
 
-    const BACKEND = process.env.BACKEND_URL || 'https://ams-backend-1-yvgm.onrender.com';
+    const BACKEND = process.env.BACKEND_URL || 'https://brp-mobile.onrender.com';
     const verifyUrl = `${BACKEND}/api/auth/verify-email/${rawToken}`;
     await sendMail(user.email, '[BRP AMS] Verify Your Email',
       emailLayout('Verify Your Email Address', `
