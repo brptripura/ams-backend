@@ -48,32 +48,52 @@ app.use(helmet({
   frameguard: { action: 'deny' },
 }));
 
-const ALLOWED_ORIGINS = [
-  process.env.FRONTEND_URL || 'http://localhost:3000',
-  process.env.BACKEND_URL  || 'https://brp-mobile.onrender.com',
+// Build the allowed-origins list from env + hardcoded known URLs.
+// All historical Render service URLs are included so old deployments still work.
+const ALLOWED_ORIGINS = new Set([
+  // Current URLs (always allowed)
+  'https://brp-mobile.onrender.com',
+  'https://ams-frontend-web.onrender.com',
+  'https://ams-frontend-web-niuz.onrender.com',
+  // Historical backend URLs (kept so any outstanding JWT/cookie sessions still work)
+  'https://ams-backend-3it1.onrender.com',
+  'https://ams-backend-1-yvgm.onrender.com',
+  // From env (takes effect after Render redeploy)
+  process.env.FRONTEND_URL,
+  process.env.BACKEND_URL,
+  // Local dev
   'http://localhost:3000',
   'http://localhost:3001',
   'http://localhost:4001',
+  'http://localhost:10000',
   'capacitor://localhost',
   'http://localhost',
   'https://localhost',
-];
+].filter(Boolean));
+
 app.use(cors({
   origin: (origin, cb) => {
-    // allow requests with no origin (mobile apps, curl, postman)
+    // allow requests with no origin (mobile apps, curl, Postman)
     if (!origin) return cb(null, true);
 
-    // allow localhost during development
-    if (origin.startsWith("http://localhost") || origin.startsWith("http://127.0.0.1")) {
+    // allow any localhost / 127.0.0.1 (local dev)
+    if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
       return cb(null, true);
     }
 
-    // allow configured production domains
-    if (ALLOWED_ORIGINS.includes(origin)) {
+    // allow any *.onrender.com subdomain that belongs to this project
+    // (covers any future Render service URLs automatically)
+    if (origin.endsWith('.onrender.com')) {
       return cb(null, true);
     }
 
-    return cb(new Error("Not allowed by CORS"));
+    // allow explicitly listed origins
+    if (ALLOWED_ORIGINS.has(origin)) {
+      return cb(null, true);
+    }
+
+    console.warn('[CORS] Blocked origin:', origin);
+    return cb(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
