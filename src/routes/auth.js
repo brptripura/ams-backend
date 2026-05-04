@@ -376,238 +376,329 @@ router.post('/forgot-password', forgotLimiter, [
   }
 });
 
-// ── GET /api/auth/reset-password — Self-contained HTML reset form ─────────
-// Email links point here (backend URL — always correct).
-// Validates the token, then serves a full HTML page with the new-password form.
-// On submit the form POSTs to /api/auth/reset-password (JSON) and shows the result.
-router.get('/reset-password', async (req, res) => {
-  const token   = (req.query.token || '').trim();
-  // Where to send user after successful reset — default to known frontend URL or backend root
-  const FRONTEND  = (process.env.FRONTEND_URL  || '').replace(/\/$/, '');
-  const loginUrl  = FRONTEND ? `${FRONTEND}/login` : '/';
-
-  const html = (opts) => `<!DOCTYPE html>
+// ── Shared HTML shell for reset-password pages ───────────────────────────
+const resetPageShell = (icon, title, bodyHtml) => `<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Reset Password — BRP AMS</title>
+<title>${title} — BRP AMS</title>
 <style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{min-height:100vh;display:flex;align-items:center;justify-content:center;
-       background:linear-gradient(145deg,#0A1F44 0%,#1E3A8A 60%,#1e40af 100%);
-       font-family:Arial,Helvetica,sans-serif;padding:20px}
-  .card{background:#fff;border-radius:20px;box-shadow:0 24px 64px rgba(0,0,0,.25);
-        width:100%;max-width:440px;overflow:hidden}
-  .hdr{background:linear-gradient(135deg,#1E3A8A,#2563EB);padding:28px 32px;text-align:center}
-  .hdr h1{color:#fff;font-size:20px;font-weight:800;margin:0 0 4px}
-  .hdr p{color:rgba(255,255,255,.7);font-size:13px;margin:0}
-  .hdr .ico{width:52px;height:52px;border-radius:16px;background:rgba(255,255,255,.15);
-             display:flex;align-items:center;justify-content:center;margin:0 auto 14px;font-size:24px}
-  .body{padding:28px 32px}
-  label{display:block;font-size:11px;font-weight:700;color:#475569;
-        text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
-  input{width:100%;border:1.5px solid #e2e8f0;border-radius:10px;padding:12px 14px;
-        font-size:14px;color:#0f172a;outline:none;font-family:inherit;box-sizing:border-box}
-  input:focus{border-color:#1E3A8A;box-shadow:0 0 0 3px rgba(30,58,138,.15)}
-  .err{font-size:12px;color:#DC2626;margin:6px 0 0;display:none}
-  .hint{font-size:11px;color:#64748b;background:#F8FAFC;border-radius:8px;
-        padding:10px 12px;margin:16px 0 20px;line-height:1.8}
-  .hint strong{color:#1E3A8A}
-  .btn{width:100%;padding:14px;border-radius:10px;border:none;font-size:15px;font-weight:700;
-       cursor:pointer;font-family:inherit;transition:.2s}
-  .btn-primary{background:linear-gradient(135deg,#1E3A8A,#2563EB);color:#fff;
-               box-shadow:0 4px 14px rgba(30,58,138,.3)}
-  .btn-primary:hover{opacity:.9}
-  .btn-primary:disabled{opacity:.6;cursor:not-allowed}
-  .btn-outline{background:none;color:#1E3A8A;border:1.5px solid #e2e8f0;margin-top:10px}
-  .pw-wrap{position:relative}
-  .pw-toggle{position:absolute;right:12px;top:50%;transform:translateY(-50%);
-             background:none;border:none;cursor:pointer;color:#64748b;font-size:16px;padding:4px}
-  .alert{border-radius:10px;padding:14px 16px;font-size:14px;margin-bottom:16px;display:none}
-  .alert-err{background:#FEF2F2;color:#DC2626;border:1px solid #FCA5A5}
-  .alert-ok{background:#F0FDF4;color:#15803D;border:1px solid #86EFAC}
-  .mb16{margin-bottom:16px}
-  .mb8{margin-bottom:8px}
-  .center{text-align:center}
-  .big{font-size:48px;margin-bottom:16px}
-  .title{font-size:18px;font-weight:800;color:#1E3A8A;margin-bottom:8px}
-  .sub{font-size:14px;color:#64748b;line-height:1.6;margin-bottom:24px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{min-height:100vh;display:flex;align-items:center;justify-content:center;
+     background:linear-gradient(145deg,#0A1F44 0%,#1E3A8A 60%,#1e40af 100%);
+     font-family:Arial,Helvetica,sans-serif;padding:20px}
+.card{background:#fff;border-radius:20px;box-shadow:0 24px 64px rgba(0,0,0,.25);
+      width:100%;max-width:440px;overflow:hidden}
+.hdr{background:linear-gradient(135deg,#1E3A8A,#2563EB);padding:24px 28px;text-align:center}
+.hdr-ico{width:52px;height:52px;border-radius:16px;background:rgba(255,255,255,.15);
+          display:flex;align-items:center;justify-content:center;margin:0 auto 12px;font-size:24px}
+.hdr h1{color:#fff;font-size:19px;font-weight:800;margin:0 0 3px}
+.hdr p{color:rgba(255,255,255,.7);font-size:12px;margin:0}
+.body{padding:24px 28px}
+label{display:block;font-size:11px;font-weight:700;color:#475569;
+      text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;margin-top:14px}
+input[type=password],input[type=text]{
+  width:100%;border:1.5px solid #e2e8f0;border-radius:10px;
+  padding:13px 14px;font-size:15px;color:#0f172a;outline:none;
+  font-family:inherit;box-sizing:border-box;-webkit-appearance:none}
+input:focus{border-color:#1E3A8A;box-shadow:0 0 0 3px rgba(30,58,138,.12)}
+.hint{font-size:11px;color:#64748b;background:#F8FAFC;border-radius:8px;
+      padding:10px 12px;margin:14px 0 18px;line-height:1.9}
+.hint b{color:#1E3A8A}
+.btn-primary{display:block;width:100%;padding:14px;border-radius:10px;border:none;
+             font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;
+             background:linear-gradient(135deg,#1E3A8A,#2563EB);color:#fff;
+             box-shadow:0 4px 14px rgba(30,58,138,.3);margin-top:4px;
+             -webkit-appearance:none;text-align:center;text-decoration:none}
+.btn-outline{display:block;width:100%;padding:13px;border-radius:10px;
+             background:none;color:#1E3A8A;border:1.5px solid #e2e8f0;
+             margin-top:10px;text-align:center;font-size:15px;font-weight:700;
+             text-decoration:none;font-family:inherit;cursor:pointer;box-sizing:border-box}
+.alert-err{background:#FEF2F2;color:#DC2626;border:1px solid #FCA5A5;
+           border-radius:10px;padding:12px 14px;font-size:13px;margin-bottom:14px;line-height:1.5}
+.center{text-align:center}
+.big{font-size:52px;margin-bottom:14px}
+.page-title{font-size:18px;font-weight:800;color:#1E3A8A;margin-bottom:8px}
+.sub{font-size:14px;color:#64748b;line-height:1.6;margin-bottom:22px}
 </style>
 </head><body>
 <div class="card">
   <div class="hdr">
-    <div class="ico">${opts.icon}</div>
-    <h1>${opts.title}</h1>
+    <div class="hdr-ico">${icon}</div>
+    <h1>${title}</h1>
     <p>BRP Attendance Management System</p>
   </div>
-  <div class="body">
-    ${opts.body}
-  </div>
+  <div class="body">${bodyHtml}</div>
 </div>
-<script>
-  function togglePw(id,btn){
-    var i=document.getElementById(id);
-    if(i.type==='password'){i.type='text';btn.textContent='🙈';}
-    else{i.type='password';btn.textContent='👁️';}
-  }
-</script>
 </body></html>`;
 
-  // ── Token missing ──────────────────────────────────────────────────────
+// ── GET /api/auth/reset-password ─────────────────────────────────────────
+// Email links point here. Validates the token, then serves a ZERO-JS pure-HTML
+// form. The form POSTs to /api/auth/reset-password-form (urlencoded) which
+// returns an HTML success page or redirects back here with ?error=.
+// No <script> tags — not blocked by Helmet CSP script-src 'self'.
+router.get('/reset-password', async (req, res) => {
+  const token    = (req.query.token || '').trim();
+  const errorMsg = (req.query.error  || '').trim();
+  const FRONTEND = (process.env.FRONTEND_URL  || '').replace(/\/$/, '');
+  const BACKEND  = (process.env.BACKEND_URL   || 'https://brp-mobile.onrender.com').replace(/\/$/, '');
+  const loginUrl = FRONTEND ? `${FRONTEND}/login` : `${BACKEND}/login`;
+
+  // ── Shared CSS (no JS anywhere) ──────────────────────────────────────
+  const page = (icon, title, bodyHtml, status = 200) => {
+    res.status(status).send(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title} — BRP AMS</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{min-height:100vh;display:flex;align-items:center;justify-content:center;
+     background:linear-gradient(145deg,#0A1F44 0%,#1E3A8A 60%,#1e40af 100%);
+     font-family:Arial,Helvetica,sans-serif;padding:20px}
+.card{background:#fff;border-radius:20px;box-shadow:0 24px 64px rgba(0,0,0,.25);
+      width:100%;max-width:440px;overflow:hidden}
+.hdr{background:linear-gradient(135deg,#1E3A8A,#2563EB);padding:24px 28px;text-align:center}
+.hdr-ico{width:52px;height:52px;border-radius:16px;background:rgba(255,255,255,.15);
+         display:flex;align-items:center;justify-content:center;margin:0 auto 12px;font-size:24px}
+.hdr h1{color:#fff;font-size:19px;font-weight:800;margin:0 0 3px}
+.hdr p{color:rgba(255,255,255,.7);font-size:12px;margin:0}
+.body{padding:24px 28px}
+label{display:block;font-size:11px;font-weight:700;color:#475569;
+      text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;margin-top:16px}
+input[type=password]{width:100%;border:1.5px solid #e2e8f0;border-radius:10px;
+  padding:13px 14px;font-size:15px;color:#0f172a;outline:none;
+  font-family:inherit;-webkit-appearance:none;appearance:none}
+input[type=password]:focus{border-color:#1E3A8A;box-shadow:0 0 0 3px rgba(30,58,138,.12)}
+.hint{font-size:11px;color:#64748b;background:#F8FAFC;border-radius:8px;
+      padding:10px 12px;margin:16px 0 20px;line-height:1.9}
+.hint b{color:#1E3A8A}
+.btn-primary{display:block;width:100%;padding:14px;border-radius:10px;border:none;
+             font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;
+             background:linear-gradient(135deg,#1E3A8A,#2563EB);color:#fff;
+             box-shadow:0 4px 14px rgba(30,58,138,.3);margin-top:4px;
+             -webkit-appearance:none;text-align:center}
+.btn-outline{display:block;width:100%;padding:13px;border-radius:10px;background:#fff;
+             color:#1E3A8A;border:1.5px solid #e2e8f0;margin-top:10px;text-align:center;
+             font-size:15px;font-weight:700;text-decoration:none;box-sizing:border-box}
+.alert-err{background:#FEF2F2;color:#DC2626;border:1px solid #FCA5A5;
+           border-radius:10px;padding:12px 14px;font-size:13px;margin-bottom:16px;line-height:1.5}
+.center{text-align:center}
+.big{font-size:52px;margin-bottom:14px}
+.page-title{font-size:18px;font-weight:800;color:#1E3A8A;margin-bottom:8px}
+.sub{font-size:14px;color:#64748b;line-height:1.6;margin-bottom:22px}
+</style>
+</head><body>
+<div class="card">
+  <div class="hdr">
+    <div class="hdr-ico">${icon}</div>
+    <h1>${title}</h1>
+    <p>BRP Attendance Management System</p>
+  </div>
+  <div class="body">${bodyHtml}</div>
+</div>
+</body></html>`);
+  };
+
+  // ── Token missing ────────────────────────────────────────────────────
   if (!token) {
-    return res.status(400).send(html({
-      icon: '❌', title: 'Invalid Link',
-      body: `<div class="center">
+    return page('❌', 'Invalid Link', `
+      <div class="center">
         <div class="big">❌</div>
-        <div class="title">Link Invalid</div>
-        <p class="sub">This password reset link is missing the reset token. Please request a new one.</p>
-        <a href="${loginUrl}" style="display:block;width:100%;padding:14px;border-radius:10px;
-           background:linear-gradient(135deg,#1E3A8A,#2563EB);color:#fff;text-decoration:none;
-           font-weight:700;font-size:15px;text-align:center;box-sizing:border-box;">
-          ← Back to Sign In
-        </a>
-      </div>`,
-    }));
+        <div class="page-title">Link Invalid</div>
+        <p class="sub">This password reset link is missing the token.<br>Please request a new one.</p>
+        <a href="${loginUrl}" class="btn-primary">← Back to Sign In</a>
+      </div>`, 400);
   }
 
-  // ── Validate token ────────────────────────────────────────────────────
+  // ── Validate token in DB ─────────────────────────────────────────────
   let user;
   try {
-    const hashedTok = hashToken(token);
     user = await User.findOne({
-      pwd_reset_token:   hashedTok,
+      pwd_reset_token:   hashToken(token),
       pwd_reset_expires: { $gt: new Date() },
-      is_active: { $ne: 0 },
+      is_active:         { $ne: 0 },
     }).lean();
   } catch (e) {
     console.error('[ResetPage] DB error:', e.message);
   }
 
   if (!user) {
-    return res.status(400).send(html({
-      icon: '⏰', title: 'Link Expired',
-      body: `<div class="center">
+    return page('⏰', 'Link Expired', `
+      <div class="center">
         <div class="big">⏰</div>
-        <div class="title">Link Expired or Already Used</div>
-        <p class="sub">This password reset link has expired (links are valid for 30 minutes) or has already been used.<br><br>Please request a new one from the Sign In page.</p>
-        <a href="${loginUrl}" style="display:block;width:100%;padding:14px;border-radius:10px;
-           background:linear-gradient(135deg,#1E3A8A,#2563EB);color:#fff;text-decoration:none;
-           font-weight:700;font-size:15px;text-align:center;box-sizing:border-box;">
-          ← Back to Sign In
-        </a>
-      </div>`,
-    }));
+        <div class="page-title">Link Expired or Already Used</div>
+        <p class="sub">This link expired (valid 30 min) or was already used.<br><br>
+        Please request a new one from the Sign In page.</p>
+        <a href="${loginUrl}" class="btn-primary">← Back to Sign In</a>
+      </div>`, 400);
   }
 
-  // ── Valid token — show form ────────────────────────────────────────────
-  const BACKEND = (process.env.BACKEND_URL || 'https://brp-mobile.onrender.com').replace(/\/$/, '');
-  res.send(html({
-    icon: '🔐', title: 'Set New Password',
-    body: `
-      <p style="font-size:14px;color:#64748b;text-align:center;margin-bottom:24px;line-height:1.6">
-        Hi <strong style="color:#1E3A8A">${user.name}</strong>, enter your new password below.
-      </p>
+  // ── Valid token — serve pure-HTML form, zero JavaScript ──────────────
+  const safeName = (user.name || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const safeToken = token.replace(/[^a-f0-9]/gi, ''); // hex only — safe to embed in value attr
+  const errBlock = errorMsg
+    ? `<div class="alert-err">⚠️ ${errorMsg.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`
+    : '';
 
-      <div id="alertErr" class="alert alert-err"></div>
-      <div id="alertOk"  class="alert alert-ok" style="display:none">
-        ✅ Password reset successfully! Redirecting to Sign In…
+  return page('🔐', 'Set New Password', `
+    <p style="font-size:14px;color:#64748b;text-align:center;margin-bottom:20px;line-height:1.6">
+      Hi <strong style="color:#1E3A8A">${safeName}</strong>, enter your new password below.
+    </p>
+    ${errBlock}
+    <form method="POST" action="${BACKEND}/api/auth/reset-password-form">
+      <input type="hidden" name="token" value="${safeToken}">
+
+      <label for="newPassword">New Password <span style="color:#DC2626">*</span></label>
+      <input type="password" id="newPassword" name="newPassword"
+             placeholder="Min 8 chars · Upper · Number · Symbol" required autocomplete="new-password">
+
+      <label for="confirmPassword" style="margin-top:14px">
+        Confirm Password <span style="color:#DC2626">*</span>
+      </label>
+      <input type="password" id="confirmPassword" name="confirmPassword"
+             placeholder="Repeat new password" required autocomplete="new-password">
+
+      <div class="hint">
+        <b>Password must have:</b><br>
+        ✓ 8+ characters &nbsp;·&nbsp; ✓ Uppercase (A–Z) &nbsp;·&nbsp; ✓ Lowercase (a–z)<br>
+        ✓ Number (0–9) &nbsp;·&nbsp; ✓ Symbol (!@#$%^&amp;*)
       </div>
 
-      <form id="resetForm">
-        <div class="mb16">
-          <label>New Password <span style="color:#DC2626">*</span></label>
-          <div class="pw-wrap">
-            <input id="pw" type="password" placeholder="Min 8 chars, upper, number, symbol" required />
-            <button type="button" class="pw-toggle" onclick="togglePw('pw',this)">👁️</button>
-          </div>
-          <div id="pwErr" class="err"></div>
-        </div>
+      <button type="submit" class="btn-primary">Reset Password</button>
+    </form>
+    <a href="${loginUrl}" class="btn-outline">← Back to Sign In</a>
+  `);
+});
 
-        <div class="mb8">
-          <label>Confirm Password <span style="color:#DC2626">*</span></label>
-          <input id="pw2" type="password" placeholder="Repeat new password" required />
-          <div id="pw2Err" class="err"></div>
-        </div>
+// ── POST /api/auth/reset-password-form ───────────────────────────────────
+// Handles the urlencoded form POST from the GET page above.
+// No JavaScript needed — validates on server, returns HTML success or redirects
+// back to the form with an ?error= query parameter.
+router.post('/reset-password-form', express.urlencoded({ extended: false }), async (req, res) => {
+  const FRONTEND = (process.env.FRONTEND_URL  || '').replace(/\/$/, '');
+  const BACKEND  = (process.env.BACKEND_URL   || 'https://brp-mobile.onrender.com').replace(/\/$/, '');
+  const loginUrl = FRONTEND ? `${FRONTEND}/login` : `${BACKEND}/login`;
 
-        <div class="hint">
-          <strong>Password must have:</strong><br>
-          ✓ 8+ characters &nbsp;·&nbsp; ✓ Uppercase (A–Z) &nbsp;·&nbsp; ✓ Lowercase (a–z)<br>
-          ✓ Number (0–9) &nbsp;·&nbsp; ✓ Symbol (@$!%*?&#)
-        </div>
+  const token           = (req.body.token           || '').trim();
+  const newPassword     = (req.body.newPassword     || '');
+  const confirmPassword = (req.body.confirmPassword || '');
 
-        <button type="submit" class="btn btn-primary" id="submitBtn">Reset Password</button>
-        <a href="${loginUrl}"
-           style="display:block;width:100%;padding:14px;border-radius:10px;background:none;
-                  color:#1E3A8A;border:1.5px solid #e2e8f0;margin-top:10px;text-align:center;
-                  font-size:15px;font-weight:700;text-decoration:none;box-sizing:border-box">
-          ← Back to Sign In
-        </a>
-      </form>
+  // Helper: redirect back to form with error message
+  const formError = (msg) => {
+    const safeMsg = encodeURIComponent(msg);
+    const safeToken = encodeURIComponent(token);
+    return res.redirect(302, `${BACKEND}/api/auth/reset-password?token=${safeToken}&error=${safeMsg}`);
+  };
 
-      <script>
-        var TOKEN = ${JSON.stringify(token)};
-        var API   = ${JSON.stringify(BACKEND + '/api/auth/reset-password')};
-        var LOGIN = ${JSON.stringify(loginUrl)};
+  // ── Basic validations ────────────────────────────────────────────────
+  if (!token)           return formError('Reset token missing. Please use the link from your email.');
+  if (!newPassword)     return formError('New password is required.');
+  if (newPassword !== confirmPassword) return formError('Passwords do not match. Please try again.');
+  if (newPassword.length < 8)          return formError('Password must be at least 8 characters.');
+  if (!/[A-Z]/.test(newPassword))      return formError('Password must contain at least one uppercase letter (A-Z).');
+  if (!/[a-z]/.test(newPassword))      return formError('Password must contain at least one lowercase letter (a-z).');
+  if (!/[0-9]/.test(newPassword))      return formError('Password must contain at least one number (0-9).');
+  if (!/[!@#$%^&*()\-_+=\[\]{};':"\\|,.<>\/?`~]/.test(newPassword))
+    return formError('Password must contain at least one special character (!@#$%^&*...).');
 
-        function validate(pw) {
-          if (pw.length < 8)            return 'Minimum 8 characters required';
-          if (!/[A-Z]/.test(pw))        return 'At least one uppercase letter (A-Z)';
-          if (!/[a-z]/.test(pw))        return 'At least one lowercase letter (a-z)';
-          if (!/[0-9]/.test(pw))        return 'At least one number (0-9)';
-          if (!/[!@#$%^&*()_\\-+=@$!%*?&#^,.?":{}|<>]/.test(pw))
-                                        return 'At least one special character (@#$!%^&*...)';
-          return '';
-        }
+  // ── Verify token in DB ───────────────────────────────────────────────
+  let user;
+  try {
+    user = await User.findOne({
+      pwd_reset_token:   hashToken(token),
+      pwd_reset_expires: { $gt: new Date() },
+      is_active:         { $ne: 0 },
+    }).lean();
+  } catch (e) {
+    console.error('[ResetForm] DB error:', e.message);
+    return formError('Server error. Please try again.');
+  }
 
-        document.getElementById('resetForm').addEventListener('submit', async function(e) {
-          e.preventDefault();
-          var pw  = document.getElementById('pw').value;
-          var pw2 = document.getElementById('pw2').value;
-          var err = validate(pw);
-          var pE  = document.getElementById('pwErr');
-          var p2E = document.getElementById('pw2Err');
-          var aE  = document.getElementById('alertErr');
-          var aO  = document.getElementById('alertOk');
+  if (!user) {
+    return formError('This reset link has expired or already been used. Please request a new one.');
+  }
 
-          pE.style.display  = 'none';
-          p2E.style.display = 'none';
-          aE.style.display  = 'none';
-          aO.style.display  = 'none';
+  // ── Update password ──────────────────────────────────────────────────
+  try {
+    await User.findByIdAndUpdate(user._id, {
+      $set: {
+        password_hash:         bcrypt.hashSync(newPassword, 12),
+        pwd_reset_token:       null,
+        pwd_reset_expires:     null,
+        pwd_reset_otp:         null,
+        pwd_reset_otp_expires: null,
+        pwd_changed_at:        new Date(),
+        failed_login_attempts: 0,
+        login_locked_until:    null,
+        is_active:             1,
+      },
+    });
+    await AuditLog.create({ _id: uuidv4(), user_id: user._id, action: 'RESET_PASSWORD', ip_address: req.ip });
+  } catch (e) {
+    console.error('[ResetForm] Update error:', e.message);
+    return formError('Server error while saving password. Please try again.');
+  }
 
-          if (err) { pE.textContent = '⚠️ ' + err; pE.style.display = 'block'; return; }
-          if (pw !== pw2) { p2E.textContent = '⚠️ Passwords do not match'; p2E.style.display = 'block'; return; }
+  // Fire-and-forget confirmation email
+  sendMail(user.email, '[BRP AMS] Password Changed',
+    emailLayout('Password Changed Successfully', `
+      <p style="color:#475569;font-size:14px;line-height:1.6;">
+        Hi <strong>${user.name}</strong>, your AMS password was changed successfully.
+      </p>
+      <p style="color:#dc2626;font-size:13px;">
+        If you did not do this, contact your administrator immediately.
+      </p>
+    `),
+    { type: 'PASSWORD_RESET' }
+  ).catch(err => console.error('[Auth] Password changed email failed:', err.message));
 
-          var btn = document.getElementById('submitBtn');
-          btn.disabled = true;
-          btn.textContent = 'Resetting…';
-
-          try {
-            var res = await fetch(API, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ token: TOKEN, newPassword: pw })
-            });
-            var data = await res.json();
-            if (res.ok && data.success) {
-              document.getElementById('resetForm').style.display = 'none';
-              aO.style.display = 'block';
-              setTimeout(function(){ window.location.href = LOGIN; }, 2500);
-            } else {
-              aE.textContent = '⚠️ ' + (data.message || 'Reset failed. Please request a new link.');
-              aE.style.display = 'block';
-              btn.disabled = false;
-              btn.textContent = 'Reset Password';
-            }
-          } catch(ex) {
-            aE.textContent = '⚠️ Network error. Please try again.';
-            aE.style.display = 'block';
-            btn.disabled = false;
-            btn.textContent = 'Reset Password';
-          }
-        });
-      </script>
-    `,
-  }));
+  // ── Success page ─────────────────────────────────────────────────────
+  const safeName = (user.name || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  res.send(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="4;url=${loginUrl}">
+<title>Password Reset — BRP AMS</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{min-height:100vh;display:flex;align-items:center;justify-content:center;
+     background:linear-gradient(145deg,#0A1F44 0%,#1E3A8A 60%,#1e40af 100%);
+     font-family:Arial,Helvetica,sans-serif;padding:20px}
+.card{background:#fff;border-radius:20px;box-shadow:0 24px 64px rgba(0,0,0,.25);
+      width:100%;max-width:440px;overflow:hidden}
+.hdr{background:linear-gradient(135deg,#16a34a,#15803d);padding:24px 28px;text-align:center}
+.hdr-ico{width:52px;height:52px;border-radius:16px;background:rgba(255,255,255,.2);
+         display:flex;align-items:center;justify-content:center;margin:0 auto 12px;font-size:24px}
+.hdr h1{color:#fff;font-size:19px;font-weight:800;margin:0 0 3px}
+.hdr p{color:rgba(255,255,255,.75);font-size:12px;margin:0}
+.body{padding:28px;text-align:center}
+.big{font-size:52px;margin-bottom:16px}
+.title{font-size:18px;font-weight:800;color:#15803d;margin-bottom:10px}
+.sub{font-size:14px;color:#64748b;line-height:1.6;margin-bottom:24px}
+.note{font-size:12px;color:#94a3b8;margin-bottom:20px}
+.btn{display:block;width:100%;padding:14px;border-radius:10px;border:none;font-size:15px;
+     font-weight:700;cursor:pointer;font-family:inherit;
+     background:linear-gradient(135deg,#1E3A8A,#2563EB);color:#fff;
+     box-shadow:0 4px 14px rgba(30,58,138,.3);text-decoration:none;text-align:center}
+</style>
+</head><body>
+<div class="card">
+  <div class="hdr">
+    <div class="hdr-ico">✅</div>
+    <h1>Password Reset!</h1>
+    <p>BRP Attendance Management System</p>
+  </div>
+  <div class="body">
+    <div class="big">🎉</div>
+    <div class="title">All Done, ${safeName}!</div>
+    <p class="sub">Your password has been reset successfully.<br>You can now sign in with your new password.</p>
+    <p class="note">Redirecting to Sign In automatically in 4 seconds…</p>
+    <a href="${loginUrl}" class="btn">Sign In Now →</a>
+  </div>
+</div>
+</body></html>`);
 });
 
 // ── POST /api/auth/reset-password-otp ─────────────────────────────────
