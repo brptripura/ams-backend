@@ -218,10 +218,13 @@ router.post('/login', loginLimiter, [
         managerId:        user.manager_id,
         managerName,      managerEmail,
         phone:            user.phone,
-        emailVerified:    user.email_verified   || false,
-        phoneVerified:    user.phone_verified   || false,
+        emailVerified:    user.email_verified    || false,
+        phoneVerified:    user.phone_verified    || false,
         assignedBlock:    user.assigned_block,
         assignedDistrict: user.assigned_district,
+        faceEnrolled:     user.face_enrolled     || false,
+        aadhaarSubmitted: user.aadhaar_submitted || false,
+        aadhaarLast4:     user.aadhaar_last4     || null,
       }
     });
   } catch (err) {
@@ -280,6 +283,9 @@ router.get('/me', authenticate, async (req, res) => {
       createdAt:        u.created_at,
       assignedBlock:    u.assigned_block,
       assignedDistrict: u.assigned_district,
+      faceEnrolled:     u.face_enrolled    || false,
+      aadhaarSubmitted: u.aadhaar_submitted || false,
+      aadhaarLast4:     u.aadhaar_last4    || null,
     }});
   } catch (err) {
     console.error(err);
@@ -942,6 +948,101 @@ router.post('/verify-phone-otp', authenticate, [
     });
     await AuditLog.create({ _id: uuidv4(), user_id: user._id, action: 'PHONE_VERIFIED', ip_address: req.ip });
     res.json({ success: true, message: 'Phone verified successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ── POST /api/auth/submit-aadhaar ─────────────────────────────────────────
+// Stores last 4 digits of Aadhaar number — no OTP provider needed.
+// Full number is NEVER stored (UIDAI compliance).
+router.post('/submit-aadhaar', authenticate, [
+  body('aadhaarNumber')
+    .isLength({ min: 12, max: 12 }).withMessage('Aadhaar must be exactly 12 digits')
+    .isNumeric().withMessage('Aadhaar must contain only digits'),
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  try {
+    const last4 = req.body.aadhaarNumber.slice(-4);
+    await User.findByIdAndUpdate(req.user.id, {
+      $set: { aadhaar_last4: last4, aadhaar_submitted: true }
+    });
+    await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'AADHAAR_SUBMITTED', ip_address: req.ip });
+    res.json({ success: true, message: 'Aadhaar number recorded', last4 });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ── POST /api/auth/enroll-face ────────────────────────────────────────────
+// Saves the reference selfie (Cloudinary) + 128-dim face descriptor (computed
+// client-side by face-api.js). Called once after Aadhaar submission.
+router.post('/enroll-face', authenticate, async (req, res) => {
+  try {
+    const { faceDescriptor, photoBase64 } = req.body;
+
+    // Validate descriptor
+    if (!Array.isArray(faceDescriptor) || faceDescriptor.length !== 128) {
+      return res.status(400).json({ success: false, message: 'Invalid face descriptor — must be 128-element array' });
+    }
+    const nums = faceDescriptor.map(Number);
+    if (nums.some(isNaN)) {
+      return res.status(400).json({ success: false, message: 'Face descriptor contains invalid values' });
+    }
+
+    // Upload reference selfie to Cloudinary (base64 → buffer)
+    let facePhotoUrl = null;
+    if (photoBase64) {
+      try {
+        const { uploadFile } = require('../utils/storage');
+        // Strip data-URL prefix if present
+        const base64Data = photoBase64.replace(/^data:image\/\w+;base64,/, '');
+        const imgBuffer  = Buffer.from(base64Data, 'base64');
+        facePhotoUrl = await uploadFile(imgBuffer, 'ams/face-enroll', `face_${req.user.id}.jpg`, 'image/jpeg');
+      } catch (e) {
+        console.error('[FaceEnroll] Cloudinary upload failed:', e.message);
+        // Non-fatal — still store descriptor without photo
+      }
+    }
+
+    await User.findByIdAndUpdate(req.user.id, {
+      $set: {
+        face_descriptor:  nums,
+        face_enrolled:    true,
+        face_enrolled_at: new Date(),
+        face_photo_url:   facePhotoUrl,
+      }
+    });
+
+    await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'FACE_ENROLLED', ip_address: req.ip });
+    res.json({ success: true, message: 'Face enrolled successfully', facePhotoUrl });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ── GET /api/auth/face-descriptor ────────────────────────────────────────
+// Returns the stored 128-dim descriptor for the authenticated user.
+// Frontend uses this at check-in time to compare against live camera.
+router.get('/face-descriptor', authenticate, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id)
+      .select('face_descriptor face_enrolled face_photo_url')
+      .lean();
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!user.face_enrolled || !user.face_descriptor?.length) {
+      return res.json({ success: true, enrolled: false, descriptor: null });
+    }
+    res.json({
+      success:    true,
+      enrolled:   true,
+      descriptor: user.face_descriptor,    // 128 numbers — used by face-api.js on client
+      photoUrl:   user.face_photo_url,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: 'Server error' });

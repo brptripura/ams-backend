@@ -277,6 +277,12 @@ if (existing) {
       ? await uploadFile(req.file.buffer, 'ams/selfies', req.file.originalname, req.file.mimetype)
       : null;
 
+    // Face verification fields (computed client-side, sent as form fields)
+    const faceVerifiedRaw = req.body.faceVerified;
+    const faceDistanceRaw = req.body.faceDistance;
+    const faceVerified = faceVerifiedRaw === 'true' ? true : faceVerifiedRaw === 'false' ? false : null;
+    const faceDistance = faceDistanceRaw ? parseFloat(faceDistanceRaw) : null;
+
     await AttendanceRecord.create({
       _id:              id,
       emp_id:           req.user.id,
@@ -293,6 +299,8 @@ if (existing) {
       checkin_lat:      parseFloat(latitude),
       checkin_lng:      parseFloat(longitude),
       manager_id:       managerId,
+      face_verified:    faceVerified,
+      face_distance:    isNaN(faceDistance) ? null : faceDistance,
     });
 
     await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'CHECKIN', entity_type: 'attendance', entity_id: id });
@@ -845,6 +853,8 @@ function formatRecord(r) {
     hrRemark:            r.hr_remark,
     hrActionedBy:        r.hr_actioned_by,
     hrActionedAt:        r.hr_actioned_at,
+    faceVerified:        r.face_verified  ?? null,
+    faceDistance:        r.face_distance  ?? null,
   };
 }
 

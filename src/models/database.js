@@ -54,6 +54,14 @@ const userSchema = new mongoose.Schema({
   // Legacy single-scan fields kept for backwards compat
   scan_paper_path:     { type: String, default: null },
   scan_paper_uploaded: { type: String, default: null },
+  // ── Face biometric enrolment (face-api.js, no 3rd-party service) ────────
+  face_descriptor:     { type: [Number], default: null },  // 128-dim Float32 array
+  face_enrolled:       { type: Boolean, default: false },
+  face_enrolled_at:    { type: Date,    default: null },
+  face_photo_url:      { type: String,  default: null },   // Cloudinary URL of ref selfie
+  // ── Aadhaar (stored masked — UIDAI compliance) ───────────────────────────
+  aadhaar_last4:       { type: String,  default: null },   // last 4 digits only
+  aadhaar_submitted:   { type: Boolean, default: false },  // number entered by user
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 userSchema.index({ manager_id: 1 });
@@ -108,7 +116,10 @@ const attendanceRecordSchema = new mongoose.Schema({
   hr_actioned_by:       { type: String, ref: 'User', default: null },
   hr_actioned_at:       { type: Date, default: null },
   overridden_by:        { type: String, enum: ['hr', 'super_admin', null], default: null },
-override_remark:      { type: String, default: null },
+  override_remark:      { type: String, default: null },
+  // ── Face biometric verification (recorded per check-in / check-out) ──────
+  face_verified:        { type: Boolean, default: null },  // null=not checked, true/false
+  face_distance:        { type: Number,  default: null },  // euclidean dist (audit)
 signed_reports: [{
     path:        String,
     name:        String,
