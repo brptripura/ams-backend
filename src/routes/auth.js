@@ -1049,4 +1049,197 @@ router.get('/face-descriptor', authenticate, async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════════════════════════
+// AADHAAR VERIFICATION FLOW  (role: employee only)
+// POST /api/auth/aadhaar/init        — validate + encrypt + store Aadhaar
+// POST /api/auth/aadhaar/face-check  — mock Aadhaar-DB face verification
+// POST /api/auth/aadhaar/send-otp    — generate OTP fallback
+// POST /api/auth/aadhaar/verify-otp  — validate OTP, mark aadhaar_verified
+// POST /api/auth/aadhaar/enroll      — store live selfie + descriptor
+// ══════════════════════════════════════════════════════════════════════════
+
+const aadhaarOtpLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false,
+  message: { success: false, message: 'Too many OTP requests. Try again in 10 minutes.' },
+});
+
+// ── POST /api/auth/aadhaar/init ───────────────────────────────────────────
+// Validates 12-digit Aadhaar, AES-256-GCM encrypts + stores, returns masked.
+router.post('/aadhaar/init', authenticate, [
+  body('aadhaarNumber')
+    .isLength({ min: 12, max: 12 }).withMessage('Aadhaar must be exactly 12 digits')
+    .isNumeric().withMessage('Aadhaar must contain only digits'),
+], validate, async (req, res) => {
+  try {
+    const { aadhaarNumber } = req.body;
+    const { encrypt, mask } = require('../utils/aadhaarCrypto');
+    const enc   = encrypt(aadhaarNumber);
+    const last4 = aadhaarNumber.slice(-4);
+    await User.findByIdAndUpdate(req.user.id, {
+      $set: {
+        aadhaar_enc:       enc,
+        aadhaar_last4:     last4,
+        aadhaar_submitted: true,
+      }
+    });
+    await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'AADHAAR_INIT', ip_address: req.ip });
+    res.json({ success: true, masked: mask(aadhaarNumber) });
+  } catch (err) {
+    console.error('[AADHAAR_INIT]', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ── POST /api/auth/aadhaar/face-check ────────────────────────────────────
+// Mock Aadhaar-DB face verification.
+// Env AADHAAR_MOCK_FACE_PASS: "true" → always pass | "false" → always fail
+// Otherwise: 80% pass rate (dev/staging randomness).
+// In production: replace body with UIDAI eKYC API call.
+router.post('/aadhaar/face-check', authenticate, async (req, res) => {
+  try {
+    let faceMatch;
+    if (process.env.AADHAAR_MOCK_FACE_PASS === 'true')       faceMatch = true;
+    else if (process.env.AADHAAR_MOCK_FACE_PASS === 'false') faceMatch = false;
+    else faceMatch = Math.random() > 0.2; // 80% pass in dev
+
+    await AuditLog.create({
+      _id: uuidv4(), user_id: req.user.id,
+      action: faceMatch ? 'AADHAAR_FACE_CHECK_PASS' : 'AADHAAR_FACE_CHECK_FAIL',
+      ip_address: req.ip,
+    });
+    res.json({ success: true, faceMatch, mock: true });
+  } catch (err) {
+    console.error('[AADHAAR_FACE_CHECK]', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ── POST /api/auth/aadhaar/send-otp ──────────────────────────────────────
+// Sends OTP to user's registered email (simulates Aadhaar-linked mobile).
+// Dev / non-production: _testOtp included in response body for testing.
+router.post('/aadhaar/send-otp', authenticate, aadhaarOtpLimiter, async (req, res) => {
+  try {
+    const otp     = generateOTP();                           // 6-digit
+    const hashed  = hashToken(otp);
+    const expires = new Date(Date.now() + 5 * 60 * 1000);  // 5 min
+
+    await User.findByIdAndUpdate(req.user.id, {
+      $set: { aadhaar_otp_hash: hashed, aadhaar_otp_expires: expires }
+    });
+
+    const user = await User.findById(req.user.id).select('email name').lean();
+    try {
+      await sendMail(
+        user.email,
+        '[BRP AMS] Aadhaar Verification OTP',
+        emailLayout('Aadhaar Verification Code', `
+          <p style="color:#475569;font-size:14px;line-height:1.6;">
+            Hi <strong>${user.name}</strong>, your Aadhaar verification code is:
+          </p>
+          <div style="text-align:center;margin:28px 0;">
+            <span style="font-size:42px;font-weight:900;letter-spacing:14px;color:#0b1e3b;">${otp}</span>
+          </div>
+          <p style="color:#475569;font-size:13px;text-align:center;">
+            This code expires in <strong>5 minutes</strong>.
+          </p>
+          <p style="color:#dc2626;font-size:12px;">Never share this code with anyone.</p>
+        `),
+        { type: 'VERIFY_EMAIL' }
+      );
+    } catch (mailErr) {
+      console.error('[AADHAAR_SEND_OTP] Mail error:', mailErr.message);
+    }
+
+    await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'AADHAAR_OTP_SENT', ip_address: req.ip });
+    const resp = { success: true, message: 'OTP sent to your registered email' };
+    if (process.env.NODE_ENV !== 'production') resp._testOtp = otp;
+    res.json(resp);
+  } catch (err) {
+    console.error('[AADHAAR_SEND_OTP]', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ── POST /api/auth/aadhaar/verify-otp ────────────────────────────────────
+// Validates OTP, marks aadhaar_verified=true with type='OTP'.
+router.post('/aadhaar/verify-otp', authenticate, [
+  body('otp').isLength({ min: 6, max: 6 }).isNumeric().withMessage('OTP must be 6 digits'),
+], validate, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).lean();
+    if (!user?.aadhaar_otp_hash || !user?.aadhaar_otp_expires)
+      return res.status(400).json({ success: false, message: 'No pending OTP. Request a new one.' });
+    if (new Date() > user.aadhaar_otp_expires)
+      return res.status(400).json({ success: false, message: 'OTP expired. Request a new one.' });
+    if (hashToken(req.body.otp) !== user.aadhaar_otp_hash)
+      return res.status(400).json({ success: false, message: 'Invalid OTP' });
+
+    await User.findByIdAndUpdate(req.user.id, {
+      $set: {
+        aadhaar_verified:          true,
+        aadhaar_verification_type: 'OTP',
+        aadhaar_verified_at:       new Date(),
+        aadhaar_otp_hash:          null,
+        aadhaar_otp_expires:       null,
+      }
+    });
+    await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'AADHAAR_VERIFIED_OTP', ip_address: req.ip });
+    res.json({ success: true, message: 'Aadhaar verified via OTP' });
+  } catch (err) {
+    console.error('[AADHAAR_VERIFY_OTP]', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ── POST /api/auth/aadhaar/enroll ─────────────────────────────────────────
+// Final step: stores live selfie (Cloudinary) + 128-dim face descriptor.
+// Called after face-check OR OTP success.
+// Sets face_enrolled=true + aadhaar_verified=true.
+// Body: { faceDescriptor: number[128], photoBase64: string, verifiedBy: 'FACE'|'OTP' }
+router.post('/aadhaar/enroll', authenticate, async (req, res) => {
+  try {
+    const { faceDescriptor, photoBase64, verifiedBy } = req.body;
+
+    if (!Array.isArray(faceDescriptor) || faceDescriptor.length !== 128)
+      return res.status(400).json({ success: false, message: 'Invalid face descriptor — must be 128-element array' });
+
+    const nums = faceDescriptor.map(Number);
+    if (nums.some(isNaN))
+      return res.status(400).json({ success: false, message: 'Face descriptor contains invalid values' });
+
+    let facePhotoUrl = null;
+    if (photoBase64) {
+      try {
+        const { uploadFile } = require('../utils/storage');
+        const base64Data = photoBase64.replace(/^data:image\/\w+;base64,/, '');
+        const imgBuffer  = Buffer.from(base64Data, 'base64');
+        facePhotoUrl = await uploadFile(imgBuffer, 'ams/face-enroll', `face_${req.user.id}.jpg`, 'image/jpeg');
+      } catch (e) {
+        console.error('[AADHAAR_ENROLL] Cloudinary upload failed:', e.message);
+        // Non-fatal — descriptor is still stored without a photo URL
+      }
+    }
+
+    const vType = verifiedBy === 'FACE' ? 'FACE' : 'OTP';
+
+    await User.findByIdAndUpdate(req.user.id, {
+      $set: {
+        face_descriptor:           nums,
+        face_enrolled:             true,
+        face_enrolled_at:          new Date(),
+        face_photo_url:            facePhotoUrl,
+        aadhaar_verified:          true,
+        aadhaar_verification_type: vType,
+        aadhaar_verified_at:       new Date(),
+      }
+    });
+
+    await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'AADHAAR_FACE_ENROLLED', ip_address: req.ip });
+    res.json({ success: true, message: 'Identity enrolled successfully', facePhotoUrl });
+  } catch (err) {
+    console.error('[AADHAAR_ENROLL]', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 module.exports = router;

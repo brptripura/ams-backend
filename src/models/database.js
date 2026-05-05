@@ -59,9 +59,16 @@ const userSchema = new mongoose.Schema({
   face_enrolled:       { type: Boolean, default: false },
   face_enrolled_at:    { type: Date,    default: null },
   face_photo_url:      { type: String,  default: null },   // Cloudinary URL of ref selfie
-  // ── Aadhaar (stored masked — UIDAI compliance) ───────────────────────────
-  aadhaar_last4:       { type: String,  default: null },   // last 4 digits only
-  aadhaar_submitted:   { type: Boolean, default: false },  // number entered by user
+  // ── Aadhaar (stored encrypted — UIDAI compliance) ────────────────────────
+  aadhaar_last4:             { type: String,  default: null },   // "1234" — last 4 digits for display
+  aadhaar_submitted:         { type: Boolean, default: false },  // number entered by user
+  aadhaar_enc:               { type: String,  default: null },   // AES-256-GCM encrypted full number
+  aadhaar_verified:          { type: Boolean, default: false },  // OTP or face-check passed
+  aadhaar_verification_type: { type: String,  enum: ['FACE', 'OTP', null], default: null },
+  aadhaar_verified_at:       { type: Date,    default: null },
+  aadhaar_age:               { type: Number,  default: null },   // from eKYC (future)
+  aadhaar_otp_hash:          { type: String,  default: null },   // bcrypt hash of pending OTP
+  aadhaar_otp_expires:       { type: Date,    default: null },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 userSchema.index({ manager_id: 1 });
