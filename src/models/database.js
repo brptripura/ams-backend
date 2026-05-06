@@ -184,19 +184,28 @@ const revokedTokenSchema = new mongoose.Schema({
 });
 
 const activitySchema = new mongoose.Schema({
-  _id:              { type: String },
-  user_id:          { type: String, ref: 'User', required: true },
-  msme_name:        { type: String, required: true },
-  udyam_number:     { type: String, required: true },
-  sector:           { type: String, enum: ['Manufacturing', 'Services', 'Trade', 'Agriculture', 'Other'], required: true },
-  support_type:     { type: String, enum: ['Awareness', 'Marketing Linkage', 'Loan Facilitation', 'Training/Workshop', 'Advisory/Other'], required: true },
-  block_name:       { type: String, required: true },
-  latitude:         { type: Number, default: null },
-  longitude:        { type: Number, default: null },
-  location_address: { type: String, default: null },
-  activity_date:    { type: String, required: true },
-  remarks:          { type: String, default: null },
-  resource_type: { type: String }, // 'image' | 'raw'
+  _id:               { type: String },
+  user_id:           { type: String, ref: 'User', required: true },
+  msme_name:         { type: String, required: true },
+  udyam_number:      { type: String, required: true },
+  // Legacy fields kept for backwards compatibility
+  sector:            { type: String, default: null },
+  support_type:      { type: String, default: null },
+  // New hierarchical activity classification
+  activity_type:     { type: String, default: null },
+  sub_activity:      { type: String, default: null },
+  // MSME address (auto-filled from master when available)
+  msme_address:      { type: String, default: null },
+  block_name:        { type: String, required: true },
+  latitude:          { type: Number, default: null },
+  longitude:         { type: Number, default: null },
+  location_address:  { type: String, default: null },
+  activity_date:     { type: String, required: true },
+  remarks:           { type: String, default: null },
+  // Resolution & outcome fields
+  resolved_solution: { type: String, default: null },
+  end_results:       { type: String, default: null },
+  resource_type:     { type: String, default: null }, // 'image' | 'raw'
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 activitySchema.index({ user_id: 1 });

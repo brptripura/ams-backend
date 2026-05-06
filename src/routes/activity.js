@@ -23,8 +23,14 @@ const UDYAM_RE = /^UDYAM-[A-Z]{2}-\d{2}-\d{7}$/;
 const activityValidators = [
   body('msme_name').trim().notEmpty().withMessage('MSME name required'),
   body('udyam_number').matches(UDYAM_RE).withMessage('Format: UDYAM-XX-00-0000000'),
-  body('sector').isIn(['Manufacturing', 'Services', 'Trade', 'Agriculture', 'Other']),
-  body('support_type').isIn(['Awareness', 'Marketing Linkage', 'Loan Facilitation', 'Training/Workshop', 'Advisory/Other']),
+  body('activity_type').optional().trim(),
+  body('sub_activity').optional().trim(),
+  body('msme_address').optional().trim(),
+  body('resolved_solution').optional().trim(),
+  body('end_results').optional().trim(),
+  // Legacy fields — kept optional for backwards compatibility
+  body('sector').optional().trim(),
+  body('support_type').optional().trim(),
   body('block_name').trim().notEmpty().withMessage('Block name required'),
   body('activity_date').isISO8601().toDate(),
 ];
@@ -53,14 +59,27 @@ const dateRangeFromFilter = (filter, startDate, endDate) => {
 // ── POST /api/activity ─────────────────────────────────────────────────
 router.post('/', authenticate, upload.array('documents', 10), activityValidators, validate, async (req, res) => {
   try {
-    const { msme_name, udyam_number, sector, support_type, block_name, latitude, longitude, location_address, activity_date, remarks } = req.body;
+    const {
+      msme_name, udyam_number, block_name, latitude, longitude, location_address, activity_date,
+      activity_type, sub_activity, msme_address, resolved_solution, end_results,
+      remarks, sector, support_type,
+    } = req.body;
     const id = uuidv4();
     await Activity.create({
-      _id: id, user_id: req.user.id, msme_name, udyam_number, sector, support_type, block_name,
-      latitude: latitude || null, longitude: longitude || null,
-      location_address: location_address || null,
-      activity_date:    typeof activity_date === 'string' ? activity_date : activity_date.toISOString().slice(0, 10),
-      remarks:          remarks          || null,
+      _id: id, user_id: req.user.id, msme_name, udyam_number, block_name,
+      activity_type:     activity_type     || null,
+      sub_activity:      sub_activity      || null,
+      msme_address:      msme_address      || null,
+      resolved_solution: resolved_solution || null,
+      end_results:       end_results       || null,
+      // legacy
+      sector:            sector            || null,
+      support_type:      support_type      || null,
+      latitude:          latitude          || null,
+      longitude:         longitude         || null,
+      location_address:  location_address  || null,
+      activity_date:     typeof activity_date === 'string' ? activity_date : activity_date.toISOString().slice(0, 10),
+      remarks:           remarks           || null,
       resource_type: 'auto',
     });
 
