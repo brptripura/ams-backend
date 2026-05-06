@@ -328,9 +328,14 @@ app.use('/api/activity',          require('./src/routes/activity'));
 app.use('/api/activity-schedule', require('./src/routes/activity-schedule'));
 app.use('/api/msme',              require('./src/routes/msme'));
 
-// Health check
+// Health check — version bump triggers Render redeploy detection
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '1.0.0' });
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    version: '1.1.0',
+    aadhaarRoutes: true,   // confirms /auth/aadhaar/* routes are deployed
+  });
 });
 
 
