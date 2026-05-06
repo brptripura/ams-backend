@@ -201,9 +201,14 @@ router.post('/login', loginLimiter, [
     await AuditLog.create({ _id: uuidv4(), user_id: user._id, action: 'LOGIN', ip_address: req.ip });
 
     let managerName = null, managerEmail = null;
+    let hrName = null, hrEmail = null;
     if (user.manager_id) {
       const mgr = await User.findById(user.manager_id).select('name email').lean();
       if (mgr) { managerName = mgr.name; managerEmail = mgr.email; }
+    }
+    if (user.hr_id) {
+      const hr = await User.findById(user.hr_id).select('name email').lean();
+      if (hr) { hrName = hr.name; hrEmail = hr.email; }
     }
 
     res.json({
@@ -214,15 +219,20 @@ router.post('/login', loginLimiter, [
         name:             user.name,
         email:            user.email,
         role:             user.role,
+        roleType:         user.role_type   || null,
+        designation:      user.designation || null,
         department:       user.department,
         managerId:        user.manager_id,
         managerName,      managerEmail,
+        hrId:             user.hr_id       || null,
+        hrName,           hrEmail,
         phone:            user.phone,
         emailVerified:    user.email_verified    || false,
         phoneVerified:    user.phone_verified    || false,
         assignedBlock:    user.assigned_block,
         assignedDistrict: user.assigned_district,
         faceEnrolled:     user.face_enrolled     || false,
+        facePhotoUrl:     user.face_photo_url    || null,
         aadhaarSubmitted: user.aadhaar_submitted || false,
         aadhaarLast4:     user.aadhaar_last4     || null,
       }
@@ -256,12 +266,15 @@ router.get('/me', authenticate, async (req, res) => {
     const users = await User.aggregate([
       { $match: { _id: req.user.id } },
       { $lookup: { from: 'users', localField: 'manager_id', foreignField: '_id', as: 'manager' } },
+      { $lookup: { from: 'users', localField: 'hr_id',      foreignField: '_id', as: 'hr'      } },
       { $addFields: {
           manager_name:  { $arrayElemAt: ['$manager.name',  0] },
           manager_email: { $arrayElemAt: ['$manager.email', 0] },
           manager_phone: { $arrayElemAt: ['$manager.phone', 0] },
+          hr_name:       { $arrayElemAt: ['$hr.name',       0] },
+          hr_email:      { $arrayElemAt: ['$hr.email',      0] },
       }},
-      { $project: { manager: 0, password_hash: 0, email_verify_token: 0, pwd_reset_token: 0, phone_otp: 0 } },
+      { $project: { manager: 0, hr: 0, password_hash: 0, email_verify_token: 0, pwd_reset_token: 0, phone_otp: 0 } },
     ]);
 
     if (!users.length) return res.status(404).json({ success: false, message: 'User not found' });
@@ -272,11 +285,16 @@ router.get('/me', authenticate, async (req, res) => {
       name:             u.name,
       email:            u.email,
       role:             u.role,
+      roleType:         u.role_type    || null,
+      designation:      u.designation  || null,
       department:       u.department,
       managerId:        u.manager_id,
       managerName:      u.manager_name,
       managerEmail:     u.manager_email,
       managerPhone:     u.manager_phone,
+      hrId:             u.hr_id        || null,
+      hrName:           u.hr_name      || null,
+      hrEmail:          u.hr_email     || null,
       phone:            u.phone,
       emailVerified:    u.email_verified   || false,
       phoneVerified:    u.phone_verified   || false,
@@ -284,6 +302,7 @@ router.get('/me', authenticate, async (req, res) => {
       assignedBlock:    u.assigned_block,
       assignedDistrict: u.assigned_district,
       faceEnrolled:     u.face_enrolled    || false,
+      facePhotoUrl:     u.face_photo_url   || null,
       aadhaarSubmitted: u.aadhaar_submitted || false,
       aadhaarLast4:     u.aadhaar_last4    || null,
     }});

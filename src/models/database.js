@@ -16,6 +16,9 @@ const userSchema = new mongoose.Schema({
   role:              { type: String, enum: ['employee', 'manager', 'admin', 'hr', 'super_admin'], required: true },
   department:        { type: String, required: true },
   manager_id:        { type: String, ref: 'User', default: null },
+  hr_id:             { type: String, ref: 'User', default: null },   // Competent Authority (HR assigned)
+  designation:       { type: String, default: null },                // Job designation / title
+  role_type:         { type: String, enum: ['BRP', 'URP'], default: null }, // BRP or URP
   phone:             { type: String, default: null },
   is_active:         { type: Number, default: 1 },
   assigned_block:    { type: String, default: null },

@@ -26,8 +26,12 @@ router.get('/', authenticate, authorize('manager', 'admin', 'hr', 'super_admin')
     if (['admin', 'hr', 'super_admin'].includes(req.user.role)) {
       users = await User.aggregate([
         { $lookup: { from: 'users', localField: 'manager_id', foreignField: '_id', as: 'manager' } },
-        { $addFields: { manager_name: { $arrayElemAt: ['$manager.name', 0] } } },
-        { $project: { manager: 0, password_hash: 0 } },
+        { $lookup: { from: 'users', localField: 'hr_id',      foreignField: '_id', as: 'hr'      } },
+        { $addFields: {
+            manager_name: { $arrayElemAt: ['$manager.name', 0] },
+            hr_name:      { $arrayElemAt: ['$hr.name',      0] },
+        }},
+        { $project: { manager: 0, hr: 0, password_hash: 0 } },
         { $sort: { role: 1, name: 1 } },
       ]);
     } else {
@@ -104,7 +108,7 @@ router.post('/', authenticate, authorize('admin', 'super_admin'), [
   body('department').notEmpty().withMessage('Department is required'),
 ], validate, async (req, res) => {
   try {
-    const { name, email, empId, role, department, managerId, phone, assignedBlock, assignedDistrict } = req.body;
+    const { name, email, empId, role, department, managerId, hrId, phone, assignedBlock, assignedDistrict, designation, roleType } = req.body;
 
     // Admin cannot create hr, admin or super_admin accounts — only Super Admin can
     if (req.user.role === 'admin' && ['admin', 'super_admin'].includes(role)) {
@@ -140,6 +144,9 @@ router.post('/', authenticate, authorize('admin', 'super_admin'), [
       role,
       department,
       manager_id:           managerId        || null,
+      hr_id:                hrId             || null,
+      designation:          designation      || null,
+      role_type:            roleType         || null,
       phone:                phone            || null,
       assigned_block:       assignedBlock    || null,
       assigned_district:    assignedDistrict || null,
@@ -256,23 +263,27 @@ router.put('/:id', authenticate, authorize('admin', 'super_admin'), async (req, 
       return res.status(403).json({ success: false, message: 'Admins cannot modify HR, admin or super admin accounts' });
     }
 
-    const { name, email, role, department, managerId, phone, isActive, assignedBlock, assignedDistrict } = req.body;
+    const { name, email, role, department, managerId, hrId, phone, isActive, assignedBlock, assignedDistrict, designation, roleType } = req.body;
 
     // Admin cannot promote a user to hr, admin or super_admin
     if (req.user.role === 'admin' && role && ['hr', 'admin', 'super_admin'].includes(role)) {
       return res.status(403).json({ success: false, message: 'Admins cannot assign HR, admin or super admin roles' });
     }
     const newManagerId = managerId        !== undefined ? (managerId        || null) : user.manager_id;
+    const newHrId      = hrId             !== undefined ? (hrId             || null) : user.hr_id;
     const newBlock     = assignedBlock    !== undefined ? (assignedBlock    || null) : user.assigned_block;
     const newDistrict  = assignedDistrict !== undefined ? (assignedDistrict || null) : user.assigned_district;
     const newIsActive  = isActive         !== undefined ? isActive                  : user.is_active;
 
     const update = {
-      name:              name       || user.name,
-      email:             email      || user.email,
-      role:              role       || user.role,
-      department:        department || user.department,
+      name:              name        || user.name,
+      email:             email       || user.email,
+      role:              role        || user.role,
+      department:        department  || user.department,
       manager_id:        newManagerId,
+      hr_id:             newHrId,
+      designation:       designation !== undefined ? (designation || null) : user.designation,
+      role_type:         roleType    !== undefined ? (roleType    || null) : user.role_type,
       phone:             phone !== undefined ? (phone || null) : user.phone,
       is_active:         newIsActive,
       assigned_block:    newBlock,
@@ -674,16 +685,21 @@ function formatUser(u) {
     name:             u.name,
     email:            u.email,
     role:             u.role,
+    roleType:         u.role_type    || null,   // 'BRP' | 'URP'
+    designation:      u.designation  || null,
     department:       u.department,
     managerId:        u.manager_id,
     managerName:      u.manager_name || null,
+    hrId:             u.hr_id        || null,
+    hrName:           u.hr_name      || null,   // Competent Authority
     phone:            u.phone,
     isActive:         !!u.is_active,
     createdAt:        u.created_at,
     assignedBlock:    u.assigned_block,
     assignedDistrict: u.assigned_district,
+    facePhotoUrl:     u.face_photo_url || null,
+    faceEnrolled:     u.face_enrolled  || false,
   };
-
 }
 
 module.exports = router;
