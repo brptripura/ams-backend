@@ -64,7 +64,7 @@ const userSchema = new mongoose.Schema({
   aadhaar_submitted:         { type: Boolean, default: false },  // number entered by user
   aadhaar_enc:               { type: String,  default: null },   // AES-256-GCM encrypted full number
   aadhaar_verified:          { type: Boolean, default: false },  // OTP or face-check passed
-  aadhaar_verification_type: { type: String,  enum: ['FACE', 'OTP', null], default: null },
+  aadhaar_verification_type: { type: String,  enum: ['FACE', 'OTP'], default: null },
   aadhaar_verified_at:       { type: Date,    default: null },
   aadhaar_age:               { type: Number,  default: null },   // from eKYC (future)
   aadhaar_otp_hash:          { type: String,  default: null },   // bcrypt hash of pending OTP
