@@ -123,6 +123,26 @@ router.get('/block-list', authenticate, (req, res) => {
   res.json({ success: true, data: DISTRICT_BLOCKS });
 });
 
+// ── GET /api/msme/debug (NO AUTH — temp diagnostic) ───────────────────────
+router.get('/debug', async (req, res) => {
+  try {
+    const total   = await MsmeMaster.countDocuments();
+    const active  = await MsmeMaster.countDocuments({ is_active: true });
+    const hyd     = await MsmeMaster.countDocuments({ district: 'Hyderabad', is_active: true });
+    const samples = await MsmeMaster.find({ district: 'Hyderabad', is_active: true })
+      .select('msme_name block_name district').lean();
+    res.json({
+      success: true,
+      db_total: total,
+      db_active: active,
+      hyderabad_count: hyd,
+      hyderabad_msmes: samples,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // ── GET /api/msme ──────────────────────────────────────────────────────────
 router.get('/', authenticate, async (req, res) => {
   try {
