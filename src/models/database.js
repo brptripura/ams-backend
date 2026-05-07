@@ -196,6 +196,7 @@ const activitySchema = new mongoose.Schema({
   sub_activity:      { type: String, default: null },
   // MSME address (auto-filled from master when available)
   msme_address:      { type: String, default: null },
+  district:          { type: String, default: null },
   block_name:        { type: String, required: true },
   latitude:          { type: Number, default: null },
   longitude:         { type: Number, default: null },

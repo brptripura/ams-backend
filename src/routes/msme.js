@@ -131,13 +131,7 @@ router.get('/', authenticate, async (req, res) => {
     const isEmployee = req.user.role === 'employee';
     const isManager  = req.user.role === 'manager';
 
-    if (isEmployee || isManager) {
-      const userDoc = await User.findById(req.user.id).select('assigned_block assigned_district').lean();
-      if (!userDoc?.assigned_block) {
-        return res.json({ success: true, data: [], message: 'No block assigned to your account. Contact admin.' });
-      }
-      filter.block_name = userDoc.assigned_block;
-    } else {
+    if (!isEmployee && !isManager) {
       if (block)    filter.block_name = block;
       if (district) filter.district   = district;
     }
@@ -145,10 +139,11 @@ router.get('/', authenticate, async (req, res) => {
     if (sector) filter.sector = sector;
     if (search) filter.msme_name = { $regex: search.trim(), $options: 'i' };
 
+    const limitVal = search ? 50 : (req.query.limit ? Math.min(parseInt(req.query.limit) || 10, 500) : 500);
     const msmes = await MsmeMaster.find(filter)
       .select('msme_name udyam_number sector block_name district address owner_name contact latitude longitude')
       .sort({ msme_name: 1 })
-      .limit(500)
+      .limit(limitVal)
       .lean();
 
     res.json({ success: true, data: msmes, total: msmes.length });

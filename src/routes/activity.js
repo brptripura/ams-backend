@@ -31,6 +31,7 @@ const activityValidators = [
   // Legacy fields — kept optional for backwards compatibility
   body('sector').optional().trim(),
   body('support_type').optional().trim(),
+  body('district').optional().trim(),
   body('block_name').trim().notEmpty().withMessage('Block name required'),
   body('activity_date').isISO8601().toDate(),
 ];
@@ -60,13 +61,13 @@ const dateRangeFromFilter = (filter, startDate, endDate) => {
 router.post('/', authenticate, upload.array('documents', 10), activityValidators, validate, async (req, res) => {
   try {
     const {
-      msme_name, udyam_number, block_name, latitude, longitude, location_address, activity_date,
+      msme_name, udyam_number, district, block_name, latitude, longitude, location_address, activity_date,
       activity_type, sub_activity, msme_address, resolved_solution, end_results,
       remarks, sector, support_type,
     } = req.body;
     const id = uuidv4();
     await Activity.create({
-      _id: id, user_id: req.user.id, msme_name, udyam_number, block_name,
+      _id: id, user_id: req.user.id, msme_name, udyam_number, district: district || null, block_name,
       activity_type:     activity_type     || null,
       sub_activity:      sub_activity      || null,
       msme_address:      msme_address      || null,
