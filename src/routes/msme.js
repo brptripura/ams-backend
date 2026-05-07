@@ -131,7 +131,16 @@ router.get('/', authenticate, async (req, res) => {
     const isEmployee = req.user.role === 'employee';
     const isManager  = req.user.role === 'manager';
 
-    if (!isEmployee && !isManager) {
+    if (isEmployee || isManager) {
+      // For employees/managers: always scope to their assigned block
+      // This returns ~100-200 records — loaded once on mount, filtered client-side
+      const userDoc = await User.findById(req.user.id).select('assigned_block assigned_district').lean();
+      if (userDoc?.assigned_block) {
+        filter.block_name = userDoc.assigned_block;
+      }
+      // If no block assigned, return empty so admin knows to assign one
+    } else {
+      // Admins/HR/super_admin: respect query filters
       if (block)    filter.block_name = block;
       if (district) filter.district   = district;
     }
@@ -139,11 +148,10 @@ router.get('/', authenticate, async (req, res) => {
     if (sector) filter.sector = sector;
     if (search) filter.msme_name = { $regex: search.trim(), $options: 'i' };
 
-    const limitVal = search ? 50 : (req.query.limit ? Math.min(parseInt(req.query.limit) || 10, 500) : 500);
     const msmes = await MsmeMaster.find(filter)
       .select('msme_name udyam_number sector block_name district address owner_name contact latitude longitude')
       .sort({ msme_name: 1 })
-      .limit(limitVal)
+      .limit(500)
       .lean();
 
     res.json({ success: true, data: msmes, total: msmes.length });
