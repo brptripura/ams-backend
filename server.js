@@ -334,8 +334,8 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
-    version: '1.1.0',
-    aadhaarRoutes: true,   // confirms /auth/aadhaar/* routes are deployed
+    version: '1.2.0',
+    msmeUnfiltered: true,  // confirms MSME route no longer filters by block for employees
   });
 });
 
