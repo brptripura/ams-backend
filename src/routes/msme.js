@@ -50,6 +50,7 @@ const DISTRICT_BLOCKS = {
     'Agartala Municipal Council (North Zone)','Agartala Municipal Council (South Zone)',
     'Agartala Municipal Council (East Zone)','Agartala Municipal Council (Central Zone)',
   ],
+  'Hyderabad': ['Madhapur'],
 };
 
 // Flat block list with district info
