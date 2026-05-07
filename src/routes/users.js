@@ -414,19 +414,26 @@ router.get('/team/attendance-summary', authenticate, authorize('manager', 'admin
 // ── POST /api/users/request-assignment ───────────────────────────────────
 // Employee requests manager or block assignment — notifies all admins in-app + email
 router.post('/request-assignment', authenticate, authorize('employee'), [
-  body('type').isIn(['manager', 'block']).withMessage('type must be "manager" or "block"'),
+  body('type').isIn(['manager', 'block', 'hr', 'district', 'role_type']).withMessage('Invalid request type'),
   body('note').optional().trim(),
 ], validate, async (req, res) => {
   try {
     const { type, note } = req.body;
     const emp = await User.findById(req.user.id).select('name emp_id email').lean();
-    const admins = await User.find({ role: 'admin', is_active: 1 }).select('_id email').lean();
+    const admins = await User.find({ role: { $in: ['admin', 'hr'] }, is_active: 1 }).select('_id email role').lean();
 
-    const label   = type === 'manager' ? 'Manager Assignment' : 'Block Assignment';
+    const labelMap = {
+      manager:   'Reporting Manager Assignment',
+      block:     'Block / ULB Assignment',
+      hr:        'Competent Authority (HR) Assignment',
+      district:  'District Assignment',
+      role_type: 'Role Type (BRP/URP) Assignment',
+    };
+    const label   = labelMap[type] || type;
     const title   = `Request: ${label}`;
     const message = note
-      ? `${emp.name} (${emp.emp_id}) requests a ${type === 'manager' ? 'reporting manager' : 'block'} assignment. Note: ${note}`
-      : `${emp.name} (${emp.emp_id}) requests a ${type === 'manager' ? 'reporting manager' : 'block'} assignment.`;
+      ? `${emp.name} (${emp.emp_id}) requests ${label}. Note: ${note}`
+      : `${emp.name} (${emp.emp_id}) requests ${label}.`;
 
     // In-app notifications for all admins — link deep-links to this employee's edit panel
     if (admins.length) {
@@ -447,7 +454,7 @@ router.post('/request-assignment', authenticate, authorize('employee'), [
         <h2 style="color:#0A1F44;margin-bottom:8px">${title}</h2>
         <p style="color:#64748B;font-size:14px;line-height:1.7">${message}</p>
         <div style="margin-top:24px;padding:16px;background:#FEF3C7;border-radius:12px;border:1px solid #FDE68A">
-          <p style="color:#92400E;font-size:13px;margin:0">Please log in to the <strong>Admin Dashboard → Users</strong> to assign the ${type === 'manager' ? 'reporting manager' : 'block'} for this employee.</p>
+          <p style="color:#92400E;font-size:13px;margin:0">Please log in to the <strong>Admin Dashboard → Users</strong> to update <strong>${label}</strong> for this employee.</p>
         </div>
       </div>`;
     for (const admin of admins) {

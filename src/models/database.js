@@ -219,11 +219,15 @@ const msmeMasterSchema = new mongoose.Schema({
   _id:          { type: String },
   msme_name:    { type: String, required: true },
   udyam_number: { type: String, required: true, unique: true },
-  sector:       { type: String, enum: ['Manufacturing', 'Services', 'Trade', 'Agriculture', 'Other'], required: true },
+  sector:       { type: String, default: null },
   block_name:   { type: String, required: true },
   district:     { type: String, required: true },
+  address:      { type: String, default: null },   // Full address from Udyam registration
   owner_name:   { type: String, default: null },
   contact:      { type: String, default: null },
+  latitude:     { type: Number, default: null },
+  longitude:    { type: Number, default: null },
+  nic_code:     { type: String, default: null },
   is_active:    { type: Boolean, default: true },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 

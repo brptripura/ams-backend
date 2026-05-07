@@ -146,7 +146,7 @@ router.get('/', authenticate, async (req, res) => {
     if (search) filter.msme_name = { $regex: search.trim(), $options: 'i' };
 
     const msmes = await MsmeMaster.find(filter)
-      .select('msme_name udyam_number sector block_name district owner_name contact')
+      .select('msme_name udyam_number sector block_name district address owner_name contact latitude longitude')
       .sort({ msme_name: 1 })
       .limit(500)
       .lean();
@@ -294,10 +294,13 @@ router.post('/bulk-upload', authenticate, authorize('admin', 'super_admin'), upl
         const district = normalizeDistrict(distRaw);
         const sector   = nicToSector(activity);
 
+        const lat  = colMap.lat  != null ? parseFloat(row[colMap.lat])  || null : null;
+        const lng  = colMap.lng  != null ? parseFloat(row[colMap.lng])  || null : null;
+
         ops.push({
           updateOne: {
             filter: { udyam_number: udyam.toUpperCase() },
-            update: { $setOnInsert: { _id: uuidv4() }, $set: { msme_name: name, udyam_number: udyam.toUpperCase(), sector, block_name: block, district, is_active: true } },
+            update: { $setOnInsert: { _id: uuidv4() }, $set: { msme_name: name, udyam_number: udyam.toUpperCase(), sector, block_name: block, district, address: address || null, latitude: lat, longitude: lng, is_active: true } },
             upsert: true,
           }
         });
