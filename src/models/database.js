@@ -319,6 +319,16 @@ const ScheduleDocument = mongoose.model('ScheduleDocument', scheduleDocumentSche
 const MsmeMaster       = mongoose.model('MsmeMaster',       msmeMasterSchema);
 const PasswordResetToken = mongoose.model('PasswordResetToken', passwordResetTokenSchema);
 
+// ── Custom Dropdown Options (shared across all users) ─────────────────────
+const customOptionSchema = new mongoose.Schema({
+  _id:      { type: String },
+  category: { type: String, required: true, index: true },  // e.g. 'ams_custom_activity_types'
+  value:    { type: String, required: true },
+  added_by: { type: String, ref: 'User', default: null },
+}, { timestamps: true });
+customOptionSchema.index({ category: 1, value: 1 }, { unique: true });
+const CustomOption = mongoose.model('CustomOption', customOptionSchema);
+
 // ── Connect ───────────────────────────────────────────────────────────────
 
 const connectionPromise = mongoose.connect(MONGO_URI, {
@@ -346,5 +356,6 @@ module.exports = {
   ScheduleDocument,
   MsmeMaster,
   PasswordResetToken,
+  CustomOption,
   connectionPromise,
 };
