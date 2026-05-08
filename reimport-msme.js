@@ -51,7 +51,8 @@ async function main() {
         headerIdx = i;
         h.forEach((x, idx) => {
           if (x.includes('udyam') || x.includes('udyog')) udyamCol = idx;
-          if (x.includes('enterprise') || x.includes('name'))  nameCol  = idx;
+          // 'district_name' also contains 'name' — only use 'name' if 'district' is NOT in the header
+          if (x.includes('enterprise') || (x.includes('name') && !x.includes('district'))) nameCol = idx;
           if (x.includes('district'))                           distCol  = idx;
         });
         break;

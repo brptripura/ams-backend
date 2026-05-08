@@ -298,9 +298,10 @@ router.post('/bulk-upload', authenticate, authorize('admin', 'super_admin'), upl
         headerIdx = i;
         row.forEach((h, idx) => {
           if (h.includes('udyog') || h.includes('udyam')) colMap.udyam = idx;
-          if (h.includes('enterprise') || h.includes('name')) colMap.name = idx;
+          // 'district_name' also contains 'name' — only use 'name' if 'district' is NOT in the header
+          if (h.includes('enterprise') || (h.includes('name') && !h.includes('district'))) colMap.name = idx;
           if (h.includes('address')) colMap.address = idx;
-          if (h.includes('district_name') || h === 'district_name') colMap.district = idx;
+          if (h.includes('district_name') || h === 'district_name' || h === 'district') colMap.district = idx;
           if (h.includes('activity')) colMap.activity = idx;
           if (h.includes('latitude')) colMap.lat = idx;
           if (h.includes('longitude')) colMap.lng = idx;
