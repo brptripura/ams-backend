@@ -184,7 +184,7 @@ router.get('/', authenticate, async (req, res) => {
     if (search) filter.msme_name = { $regex: search.trim(), $options: 'i' };
 
     const msmes = await MsmeMaster.find(filter)
-      .select('msme_name udyam_number district sector')
+      .select('msme_name udyam_number district sector address')
       .sort({ msme_name: 1 })
       .limit(5000)
       .lean();
