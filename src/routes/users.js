@@ -98,7 +98,37 @@ router.get('/employees', authenticate, authorize('manager', 'admin', 'hr', 'supe
   }
 });
 
+// GET /api/users/:id — fetch a single user by ID
+router.get('/:id', authenticate, async (req, res) => {
+  try {
+    // Employees can only fetch themselves; staff can fetch anyone
+    const isOwnRequest = req.user.id === req.params.id;
+    const isStaff = ['manager', 'admin', 'hr', 'super_admin'].includes(req.user.role);
 
+    if (!isOwnRequest && !isStaff) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+
+    const user = await User.aggregate([
+      { $match: { _id: req.params.id } },
+      { $lookup: { from: 'users', localField: 'manager_id', foreignField: '_id', as: 'manager' } },
+      { $lookup: { from: 'users', localField: 'hr_id',      foreignField: '_id', as: 'hr'      } },
+      { $addFields: {
+          manager_name: { $arrayElemAt: ['$manager.name', 0] },
+          hr_name:      { $arrayElemAt: ['$hr.name',      0] },
+      }},
+      { $project: { manager: 0, hr: 0, password_hash: 0, email_verify_token: 0,
+                    pwd_reset_token: 0, phone_otp: 0, login_attempts: 0, login_locked_until: 0 } },
+    ]);
+
+    if (!user.length) return res.status(404).json({ success: false, message: 'User not found' });
+
+    res.json({ success: true, data: formatUser(user[0]) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
 // POST /api/users - Admin / Super Admin creates user
 router.post('/', authenticate, authorize('admin', 'super_admin'), [
   body('name').notEmpty().withMessage('Name is required'),
@@ -685,7 +715,32 @@ router.get('/bulk-upload/template', authenticate, authorize('super_admin', 'admi
 });
 
 
+  // ── Format helper ─────────────────────────────────────────────────────────
 function formatUser(u) {
+  // ── Normalize scan_papers to grouped-by-month array format ───────────
+  // Each month entry: { month, monthLabel, files: [{ path, fileName, fileIndex, uploadedAt }] }
+  const rawPapers = Array.isArray(u.scan_papers) ? u.scan_papers : [];
+  const papersByMonth = {};
+  rawPapers.forEach(s => {
+    if (!s.month || !s.path) return;
+    if (!papersByMonth[s.month]) {
+      papersByMonth[s.month] = {
+        month:      s.month,
+        monthLabel: s.month_label || s.month,
+        files:      [],
+      };
+    }
+    papersByMonth[s.month].files.push({
+      path:       s.path,
+      fileName:   s.file_name   || `Scan_${s.month}_${s.file_index ?? papersByMonth[s.month].files.length + 1}`,
+      fileIndex:  s.file_index  ?? papersByMonth[s.month].files.length,
+      uploadedAt: s.uploaded_at || null,
+    });
+  });
+  // Sort files within each month by fileIndex
+  Object.values(papersByMonth).forEach(m => {
+    m.files.sort((a, b) => a.fileIndex - b.fileIndex);
+  });
   return {
     id:               u._id || u.id,
     empId:            u.emp_id,
@@ -706,6 +761,14 @@ function formatUser(u) {
     assignedDistrict: u.assigned_district,
     facePhotoUrl:     u.face_photo_url || null,
     faceEnrolled:     u.face_enrolled  || false,
+    // ── New grouped scan papers ─────────────────────────────────────
+    // Shape: { "2026-04": { month, monthLabel, files: [...] }, ... }
+    scan_papers:         papersByMonth,
+    // ── Raw array also returned for server-side processing ──────────
+    scan_papers_raw:     rawPapers,
+    // ── Legacy fields ───────────────────────────────────────────────
+    scan_paper_path:     u.scan_paper_path     || null,
+    scan_paper_uploaded: u.scan_paper_uploaded || null,
   };
 }
 

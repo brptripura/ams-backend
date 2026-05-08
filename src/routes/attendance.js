@@ -30,7 +30,15 @@ const upload = multer({
     cb(null, true);
   }
 });
-
+const uploadSignedReport = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ok = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+    if (!ok.includes(file.mimetype)) return cb(new Error('Only JPG, PNG, WEBP or PDF accepted'));
+    cb(null, true);
+  },
+});
 // ── Helper: Notify user ──────────────────────────────────────────────────
 const notify = async (userId, title, message, type = 'info', recordId = null, link = null) => {
   await Notification.create({ _id: uuidv4(), user_id: userId, title, message, type, related_record_id: recordId, link });
@@ -807,6 +815,176 @@ router.put('/:id/reapply', authenticate, authorize('employee', 'manager', 'admin
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
+// ─────────────────────────────────────────────────────────────────────────────
+router.post(
+  '/upload-signed-report',
+  authenticate,
+  uploadSignedReport.single('signedReport'),
+  async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ success: false, message: 'No file provided' });
+
+      const { month } = req.body;
+      if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+        return res.status(400).json({ success: false, message: 'Valid month (YYYY-MM) is required' });
+      }
+
+      let targetEmpId = req.user.id;
+      if (['manager', 'admin', 'hr', 'super_admin'].includes(req.user.role) && req.body.empId) {
+        targetEmpId = req.body.empId;
+      }
+
+      if (req.user.role === 'employee') {
+        const existingUser = await User.findById(targetEmpId).select('signed_reports').lean();
+        const alreadyExists = (existingUser?.signed_reports || []).some(r => r.month === month);
+        if (alreadyExists) {
+          return res.status(409).json({
+            success: false,
+            message: `A signed report has already been uploaded for ${month}. Contact your admin to replace it.`,
+          });
+        }
+      }
+
+      const monthLabel = new Date(`${month}-01`).toLocaleDateString('en-IN', {
+        month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata',
+      });
+
+      const signedPath = await uploadFile(
+        req.file.buffer,
+        'ams/signed-reports',
+        req.file.originalname,
+        req.file.mimetype,
+      );
+
+      const entry = {
+        path:        signedPath,
+        name:        req.file.originalname,
+        month,
+        month_label: monthLabel,
+        uploaded_at: new Date(),
+        uploaded_by: req.user.id,
+      };
+
+      // ── Purge entries older than 3 months before inserting new one ────────
+      const cutoff = new Date();
+      cutoff.setMonth(cutoff.getMonth() - 3);
+
+      await User.findByIdAndUpdate(
+        targetEmpId,
+        { $pull: { signed_reports: { uploaded_at: { $lt: cutoff } } } },
+        { strict: false },
+      );
+      // ──────────────────────────────────────────────────────────────────────
+
+      await User.findByIdAndUpdate(
+        targetEmpId,
+        { $push: { signed_reports: entry } },
+        { strict: false },
+      );
+
+      if (req.user.role === 'employee') {
+        const emp = await User.findById(req.user.id).select('name manager_id').lean();
+        if (emp?.manager_id) {
+          await notify(
+            emp.manager_id,
+            'Signed Report Uploaded',
+            `${emp.name} uploaded the signed attendance report for ${monthLabel}.`,
+            'info', null, '/manager/reports',
+          );
+        }
+      }
+
+      await AuditLog.create({
+        _id: uuidv4(), user_id: req.user.id,
+        action: 'UPLOAD_SIGNED_REPORT',
+        entity_type: 'user', entity_id: targetEmpId,
+        new_value: `${month} signed report`,
+      });
+
+      res.status(201).json({
+        success: true,
+        message: `Signed report uploaded for ${monthLabel}`,
+        path: signedPath,
+        month,
+        monthLabel,
+      });
+    } catch (err) {
+      console.error('[upload-signed-report]', err);
+      res.status(500).json({ success: false, message: 'Server error' });
+    }
+  },
+);
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+router.delete('/signed-reports/:empId/:month', authenticate, authorize('manager', 'admin', 'hr', 'super_admin'), async (req, res) => {
+  try {
+    const { empId, month } = req.params;
+
+    // Validate month format
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ success: false, message: 'Invalid month format (YYYY-MM)' });
+    }
+
+    const emp = await User.findById(empId).select('signed_reports manager_id name').lean();
+    if (!emp) return res.status(404).json({ success: false, message: 'Employee not found' });
+
+    // Manager can only delete reports of their team members
+    if (req.user.role === 'manager' && emp.manager_id !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Not authorized to delete this employee\'s report' });
+    }
+
+    // Remove the report for the given month
+    const updated = (emp.signed_reports || []).filter(r => r.month !== month);
+    
+    await User.findByIdAndUpdate(empId, { $set: { signed_reports: updated } }, { strict: false });
+
+    await AuditLog.create({
+      _id: uuidv4(), user_id: req.user.id,
+      action: 'DELETE_SIGNED_REPORT',
+      entity_type: 'user', entity_id: empId,
+      old_value: month,
+    });
+
+    res.json({ success: true, message: `Signed report for ${month} deleted` });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/signed-reports/:empId', authenticate, async (req, res) => {
+  try {
+    // Employees can fetch their own; staff can fetch anyone
+    const isOwnRequest = req.user.id === req.params.empId;
+    if (!isOwnRequest && !['manager', 'admin', 'hr', 'super_admin'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+
+    const emp = await User.findById(req.params.empId).select('signed_reports name emp_id').lean();
+    if (!emp) return res.status(404).json({ success: false, message: 'Employee not found' });
+
+    // ── Only return reports from the last 3 months ────────────────────────
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - 3);
+    // ──────────────────────────────────────────────────────────────────────
+
+    const reports = (emp.signed_reports || [])
+      .filter(r => new Date(r.uploaded_at) >= cutoff)   // ← 3-month filter
+      .map(r => ({
+        path:       r.path,
+        name:       r.name,
+        month:      r.month,
+        monthLabel: r.month_label,
+        uploadedAt: r.uploaded_at,
+        uploadedBy: r.uploaded_by,
+      }));
+
+    res.json({ success: true, data: reports });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
 
 // ── Format helper ────────────────────────────────────────────────────────
 function formatRecord(r) {
@@ -857,183 +1035,8 @@ function formatRecord(r) {
     faceDistance:        r.face_distance  ?? null,
   };
 }
-
-// ── Multer — scan documents ───────────────────────────────────────────────
-const uploadScan = multer({
-  storage: multer.memoryStorage(),
-  limits:  { fileSize: 10 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const ok = ['image/jpeg', 'image/png', 'image/webp', 'image/bmp', 'application/pdf'];
-    if (!ok.includes(file.mimetype)) return cb(new Error('Only JPG, PNG, WEBP or PDF accepted'));
-    cb(null, true);
-  },
-});
-
-const uploadSignedReport = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const ok = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
-    if (!ok.includes(file.mimetype)) return cb(new Error('Only JPG, PNG, WEBP or PDF accepted'));
-    cb(null, true);
-  },
-});
-
-// ── POST /upload-scan ─────────────────────────────────────────────────────
-router.post('/upload-scan', authenticate, authorize('employee'), uploadScan.single('scan'), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ success: false, message: 'No file provided' });
-
-    const day      = istDateStr();
-    const dayLabel = new Date().toLocaleDateString('en-IN', {
-      timeZone: 'Asia/Kolkata', day: '2-digit', month: 'long', year: 'numeric',
-    });
-
-    const currentUser = await User.findById(req.user.id).select('scan_papers').lean();
-    const arr         = currentUser?.scan_papers || [];
-    const existing    = Array.isArray(arr)
-      ? arr.filter(s => (s.day || s.date) === day)
-      : (arr[day]?.files || []);
-
-    if (existing.length >= 3)
-      return res.status(400).json({ success: false, message: 'Max 2 files already uploaded for today.' });
-
-    const fileIndex = existing.length;
-    const scanPath  = await uploadFile(req.file.buffer, 'ams/scans', req.file.originalname, req.file.mimetype);
-
-    await User.findByIdAndUpdate(
-      req.user.id,
-      { $push: { scan_papers: { path: scanPath, day, day_label: dayLabel, file_name: req.file.originalname, file_index: fileIndex, uploaded_at: new Date() } } },
-      { strict: false },
-    );
-
-    res.json({ success: true, scanPath, day, dayLabel, fileIndex, totalForDay: fileIndex + 1 });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-// ── DELETE /clear-scan ────────────────────────────────────────────────────
-router.delete('/clear-scan', authenticate, authorize('employee'), async (req, res) => {
-  try {
-    const dayParam  = req.query.day || req.query.month || null;
-    const fileIndex = req.query.fileIndex !== undefined ? parseInt(req.query.fileIndex, 10) : undefined;
-
-    const u   = await User.findById(req.user.id).select('scan_papers').lean();
-    const arr = u?.scan_papers || [];
-
-    if (!Array.isArray(arr)) {
-      await User.findByIdAndUpdate(req.user.id, { $set: { scan_papers: [] } }, { strict: false });
-      return res.json({ success: true });
-    }
-
-    let updated;
-    if (dayParam && fileIndex !== undefined) {
-      updated = arr.filter(s => !((s.day === dayParam || s.date === dayParam || s.month === dayParam) && s.file_index === fileIndex));
-    } else if (dayParam) {
-      updated = arr.filter(s => s.day !== dayParam && s.date !== dayParam && s.month !== dayParam);
-    } else {
-      updated = [];
-    }
-
-    await User.findByIdAndUpdate(req.user.id, { $set: { scan_papers: updated } }, { strict: false });
-    res.json({ success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-// ── POST /upload-signed-report ────────────────────────────────────────────
-router.post('/upload-signed-report', authenticate, uploadSignedReport.single('signedReport'), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ success: false, message: 'No file provided' });
-
-    const { month } = req.body;
-    if (!month || !/^\d{4}-\d{2}$/.test(month))
-      return res.status(400).json({ success: false, message: 'Valid month (YYYY-MM) is required' });
-
-    let targetEmpId = req.user.id;
-    if (['manager', 'admin', 'hr', 'super_admin'].includes(req.user.role) && req.body.empId)
-      targetEmpId = req.body.empId;
-
-    if (req.user.role === 'employee') {
-      const existingUser = await User.findById(targetEmpId).select('signed_reports').lean();
-      if ((existingUser?.signed_reports || []).some(r => r.month === month))
-        return res.status(409).json({ success: false, message: `A signed report for ${month} already exists. Contact your admin to replace it.` });
-    }
-
-    const monthLabel = new Date(`${month}-01`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata' });
-    const signedPath = await uploadFile(req.file.buffer, 'ams/signed-reports', req.file.originalname, req.file.mimetype);
-
-    const entry = { path: signedPath, name: req.file.originalname, month, month_label: monthLabel, uploaded_at: new Date(), uploaded_by: req.user.id };
-
-    const cutoff = new Date();
-    cutoff.setMonth(cutoff.getMonth() - 3);
-    await User.findByIdAndUpdate(targetEmpId, { $pull: { signed_reports: { uploaded_at: { $lt: cutoff } } } }, { strict: false });
-    await User.findByIdAndUpdate(targetEmpId, { $push: { signed_reports: entry } }, { strict: false });
-
-    if (req.user.role === 'employee') {
-      const emp = await User.findById(req.user.id).select('name manager_id').lean();
-      if (emp?.manager_id)
-        await notify(emp.manager_id, 'Signed Report Uploaded', `${emp.name} uploaded the signed attendance report for ${monthLabel}.`, 'info', null, '/manager/reports');
-    }
-
-    await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'UPLOAD_SIGNED_REPORT', entity_type: 'user', entity_id: targetEmpId, new_value: `${month} signed report` });
-    res.status(201).json({ success: true, message: `Signed report uploaded for ${monthLabel}`, path: signedPath, month, monthLabel });
-  } catch (err) {
-    console.error('[upload-signed-report]', err);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-// ── DELETE /signed-reports/:empId/:month ──────────────────────────────────
-router.delete('/signed-reports/:empId/:month', authenticate, authorize('manager', 'admin', 'hr', 'super_admin'), async (req, res) => {
-  try {
-    const { empId, month } = req.params;
-    if (!/^\d{4}-\d{2}$/.test(month))
-      return res.status(400).json({ success: false, message: 'Invalid month format (YYYY-MM)' });
-
-    const emp = await User.findById(empId).select('signed_reports manager_id').lean();
-    if (!emp) return res.status(404).json({ success: false, message: 'Employee not found' });
-
-    if (req.user.role === 'manager' && emp.manager_id !== req.user.id)
-      return res.status(403).json({ success: false, message: 'Not authorized to delete this report' });
-
-    const updated = (emp.signed_reports || []).filter(r => r.month !== month);
-    await User.findByIdAndUpdate(empId, { $set: { signed_reports: updated } }, { strict: false });
-    await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'DELETE_SIGNED_REPORT', entity_type: 'user', entity_id: empId, old_value: month });
-    res.json({ success: true, message: `Signed report for ${month} deleted` });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-// ── GET /signed-reports/:empId ────────────────────────────────────────────
-router.get('/signed-reports/:empId', authenticate, async (req, res) => {
-  try {
-    const isOwn = req.user.id === req.params.empId;
-    if (!isOwn && !['manager', 'admin', 'hr', 'super_admin'].includes(req.user.role))
-      return res.status(403).json({ success: false, message: 'Access denied' });
-
-    const emp = await User.findById(req.params.empId).select('signed_reports name emp_id').lean();
-    if (!emp) return res.status(404).json({ success: false, message: 'Employee not found' });
-
-    const cutoff = new Date();
-    cutoff.setMonth(cutoff.getMonth() - 3);
-
-    const reports = (emp.signed_reports || [])
-      .filter(r => new Date(r.uploaded_at) >= cutoff)
-      .map(r => ({ path: r.path, name: r.name, month: r.month, monthLabel: r.month_label, uploadedAt: r.uploaded_at, uploadedBy: r.uploaded_by }));
-
-    res.json({ success: true, data: reports });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
 module.exports = router;
+
+
+
 

@@ -133,37 +133,62 @@ app.use('/api/', limiter);
 const { connectionPromise, AttendanceRecord, User, Notification, RevokedToken } = require('./src/models/database');
 const { v4: uuidv4 } = require('uuid');
 
-cron.schedule('28 18 * * *', async () => {   // 18:28 UTC = 23:58 IST
-  console.log('[AutoCheckout] Nightly cron triggered');
+// ─────────────────────────────────────────────────────────────────────────────
+// CRON 1 — Midnight IST (00:05): Mark unchecked-out records as missed-checkout
+//
+// Finds any Draft attendance record from YESTERDAY or earlier that has a
+// check-in but NO check-out, and converts it to:
+//   status           = 'Pending'
+//   is_missed_checkout = true
+//
+// This places it in the manager's queue so they can approve/reject it.
+// The employee is BLOCKED from checking in again until the manager acts.
+// ─────────────────────────────────────────────────────────────────────────────
+cron.schedule('5 0 * * *', async () => {
+  console.log('[MissedCheckout Cron] Running at midnight IST...');
   try {
-    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-    const unchecked = await AttendanceRecord.find({ date: today, status: 'Draft', checkout_time: null }).lean();
-    console.log(`[AutoCheckout] ${unchecked.length} unchecked for ${today}`);
+    const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+    // Find all Draft records from BEFORE today that have check-in but no check-out
+    const unchecked = await AttendanceRecord.find({
+      date:          { $lt: todayIST },   // strictly before today
+      status:        'Draft',
+      checkin_time:  { $ne: null },
+      checkout_time: null,
+    }).lean();
+
+    console.log(`[MissedCheckout Cron] Found ${unchecked.length} unchecked-out record(s) to process.`);
 
     for (const record of unchecked) {
-      const checkinDT  = new Date(`${record.date}T${record.checkin_time}:00+05:30`);
-      const checkoutDT = new Date(`${record.date}T23:58:00+05:30`);
-      const workedHrs  = Math.round(((checkoutDT - checkinDT) / 3600000) * 100) / 100;
-
+      // Mark as missed-checkout and move to Pending for manager review
       await AttendanceRecord.findByIdAndUpdate(record._id, {
         $set: {
-          checkout_time:    '23:58',
-          status:           'Approved',
-          submitted_at:     new Date(),
-          is_auto_checkout: true,
-          checkout_remarks: 'Auto checkout — employee did not check out',
-          worked_hours:     workedHrs > 0 ? workedHrs : null,
-          leave_type:       workedHrs < 4 ? 'Half Day' : null,
-          leave_status:     workedHrs < 4 ? 'Pending'  : null,
+          status:             'Pending',
+          is_missed_checkout: true,
+          checkout_remarks:   'Employee did not check out. Requires manager approval.',
+          submitted_at:       new Date(),
         },
       });
+
+      // Notify the employee
+      await Notification.create({
+        _id:               uuidv4(),
+        user_id:           record.emp_id,
+        title:             '⚠️ Missed Check-Out',
+        message:           `You forgot to check out on ${record.date}. Your attendance has been sent to your manager for review. You cannot check in until they approve or reject it.`,
+        type:              'warning',
+        related_record_id: record._id,
+        link:              '/employee/history',
+      });
+
+      // Notify the manager
       if (record.manager_id) {
         const emp = await User.findById(record.emp_id).select('name').lean();
         await Notification.create({
           _id:               uuidv4(),
           user_id:           record.manager_id,
-          title:             '⚠️ Auto Checkout',
-          message:           `${emp?.name || 'Employee'} was auto-checked out at 23:58 on ${record.date}. Please review.`,
+          title:             '🔔 Missed Check-Out — Action Required',
+          message:           `${emp?.name || 'An employee'} did not check out on ${record.date} (checked in at ${record.checkin_time}). Please review and approve or reject.`,
           type:              'warning',
           related_record_id: record._id,
           link:              '/manager/queue',
@@ -246,7 +271,8 @@ cron.schedule('0 18-23 * * *', async () => {
         });
       }
     }
-    console.log('[AutoCheckout] Done');
+
+    console.log('[MissedCheckout Reminder] Done');
   } catch (err) {
     console.error('[MissedCheckout Reminder] Error:', err.message);
   }
