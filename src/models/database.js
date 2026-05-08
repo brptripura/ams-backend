@@ -230,7 +230,7 @@ const msmeMasterSchema = new mongoose.Schema({
   longitude:    { type: Number, default: null },
   nic_code:     { type: String, default: null },
   is_active:    { type: Boolean, default: true },
-}, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
+}, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' }, collection: 'msme_masters' });
 
 msmeMasterSchema.index({ block_name: 1 });
 msmeMasterSchema.index({ district: 1 });
