@@ -561,7 +561,7 @@ input[type=password]:focus{border-color:#1E3A8A;box-shadow:0 0 0 3px rgba(30,58,
 
   // ── Valid token — serve pure-HTML form, zero JavaScript ──────────────
   const safeName = (user.name || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const safeToken = token.replace(/[^a-f0-9]/gi, ''); // hex only — safe to embed in value attr
+  const safeToken = token.replace(/[^a-f0-9]/gi, '');
   const errBlock = errorMsg
     ? `<div class="alert-err">⚠️ ${errorMsg.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`
     : '';
