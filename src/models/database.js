@@ -35,6 +35,8 @@ const userSchema = new mongoose.Schema({
   pwd_reset_otp_expires:{ type: Date,    default: null },
   // ── Password changed timestamp (for global logout) ─────────────────
   pwd_changed_at:       { type: Date,    default: null },
+  // ── Password history (last 2 hashes — prevent reuse) ────────────────
+  password_history:     { type: [String], default: [] },
   // ── Phone OTP ────────────────────────────────────────────────────────
   phone_otp:            { type: String,  default: null },  // hashed OTP
   phone_otp_expires:    { type: Date,    default: null },

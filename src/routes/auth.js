@@ -331,8 +331,21 @@ router.put('/change-password', authenticate, [
     if (bcrypt.compareSync(newPassword, user.password_hash))
       return res.status(400).json({ success: false, message: 'New password must differ from current password' });
 
+    // Check against last 2 used passwords
+    const history = user.password_history || [];
+    const reused = history.some(h => bcrypt.compareSync(newPassword, h));
+    if (reused)
+      return res.status(400).json({ success: false, message: 'You cannot reuse your last 2 passwords' });
+
+    // Keep only last 2 hashes in history (push current → trim to 2)
+    const updatedHistory = [user.password_hash, ...history].slice(0, 2);
+
     await User.findByIdAndUpdate(req.user.id, {
-      $set: { password_hash: bcrypt.hashSync(newPassword, 12), pwd_changed_at: new Date() }
+      $set: {
+        password_hash:    bcrypt.hashSync(newPassword, 12),
+        pwd_changed_at:   new Date(),
+        password_history: updatedHistory,
+      }
     });
     await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'CHANGE_PASSWORD', ip_address: req.ip });
     res.json({ success: true, message: 'Password changed successfully' });
