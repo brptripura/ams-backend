@@ -316,10 +316,11 @@ router.get('/me', authenticate, async (req, res) => {
 router.put('/change-password', authenticate, [
   body('currentPassword').notEmpty().withMessage('Current password is required'),
   body('newPassword')
-    .isLength({ min: 8 }).withMessage('Password must be at least 8 characters')
+    .isLength({ min: 8, max: 16 }).withMessage('Password must be 8–16 characters')
     .matches(/[A-Z]/).withMessage('Must contain at least one uppercase letter')
+    .matches(/[a-z]/).withMessage('Must contain at least one lowercase letter')
     .matches(/[0-9]/).withMessage('Must contain at least one number')
-    .matches(/[!@#$%^&*(),.?":{}|<>]/).withMessage('Must contain at least one special character'),
+    .matches(/[@$!%*?&#^()\-_=+[\]{};':"\\|,.<>/`~]/).withMessage('Must contain at least one special character'),
 ], validate, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
@@ -632,13 +633,14 @@ router.post('/reset-password-form', express.urlencoded({ extended: false }), asy
   // ── Basic validations ────────────────────────────────────────────────
   if (!token)           return formError('Reset token missing. Please use the link from your email.');
   if (!newPassword)     return formError('New password is required.');
-  if (newPassword !== confirmPassword) return formError('Passwords do not match. Please try again.');
-  if (newPassword.length < 8)          return formError('Password must be at least 8 characters.');
-  if (!/[A-Z]/.test(newPassword))      return formError('Password must contain at least one uppercase letter (A-Z).');
-  if (!/[a-z]/.test(newPassword))      return formError('Password must contain at least one lowercase letter (a-z).');
-  if (!/[0-9]/.test(newPassword))      return formError('Password must contain at least one number (0-9).');
-  if (!/[!@#$%^&*()\-_+=\[\]{};':"\\|,.<>\/?`~]/.test(newPassword))
-    return formError('Password must contain at least one special character (!@#$%^&*...).');
+  if (newPassword !== confirmPassword)  return formError('Passwords do not match. Please try again.');
+  if (newPassword.length < 8)           return formError('Password must be at least 8 characters.');
+  if (newPassword.length > 16)          return formError('Password must be at most 16 characters.');
+  if (!/[A-Z]/.test(newPassword))       return formError('Must contain at least one uppercase letter (A-Z).');
+  if (!/[a-z]/.test(newPassword))       return formError('Must contain at least one lowercase letter (a-z).');
+  if (!/[0-9]/.test(newPassword))       return formError('Must contain at least one number (0-9).');
+  if (!/[@$!%*?&#^()\-_+=[\]{};':"\\|,.<>/`~]/.test(newPassword))
+    return formError('Must contain at least one special character.');
 
   // ── Verify token in DB ───────────────────────────────────────────────
   let user;
@@ -764,10 +766,11 @@ router.post('/reset-password-otp', otpLimiter, [
 router.post('/reset-password', [
   body('token').notEmpty().withMessage('Reset token is required'),
   body('newPassword')
-    .isLength({ min: 8 }).withMessage('Password must be at least 8 characters')
+    .isLength({ min: 8, max: 16 }).withMessage('Password must be 8–16 characters')
     .matches(/[A-Z]/).withMessage('Must contain at least one uppercase letter')
+    .matches(/[a-z]/).withMessage('Must contain at least one lowercase letter')
     .matches(/[0-9]/).withMessage('Must contain at least one number')
-    .matches(/[!@#$%^&*()_\-+=@$!%*?&#^,.?":{}|<>]/).withMessage('Must contain at least one special character'),
+    .matches(/[@$!%*?&#^()\-_+=[\]{};':"\\|,.<>/`~]/).withMessage('Must contain at least one special character'),
 ], validate, async (req, res) => {
   try {
     const { token, newPassword } = req.body;
