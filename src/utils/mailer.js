@@ -83,7 +83,7 @@ if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
     port:   smtpPort,
     secure: smtpSecure,
     auth:   { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-    tls:    { rejectUnauthorized: false },
+
     connectionTimeout: 5000,
     greetingTimeout:   5000,
     socketTimeout:     10000,

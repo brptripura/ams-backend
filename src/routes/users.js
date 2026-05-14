@@ -187,13 +187,58 @@ router.post('/', authenticate, authorize('admin', 'super_admin'), [
       pwd_reset_expires:    resetExpires,
     });
 
-    const { sendPasswordResetEmail } = require('../utils/firebaseMailer');
-    sendPasswordResetEmail(email, tempPassword).catch(err =>
-      console.error('[User Create] Firebase welcome email failed:', err.message)
-    );
+    let emailOk = false;
+    try {
+      const FRONTEND = process.env.FRONTEND_URL || 'https://ams-frontend-web-niuz.onrender.com';
+      await sendMail(
+        email,
+        '[BRP AMS] Welcome — Your Account Has Been Created',
+        `<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+        <body style="margin:0;padding:0;background:#f2f6f8;font-family:Arial,sans-serif;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background:#f2f6f8;padding:40px 0;">
+        <tr><td align="center">
+        <table width="560" cellpadding="0" cellspacing="0"
+          style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.08);">
+        <tr><td style="background:#0b1e3b;padding:28px 32px;">
+          <h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;">BRP · AMS</h1>
+          <p style="margin:4px 0 0;color:rgba(255,255,255,.6);font-size:13px;">Attendance Management System</p>
+        </td></tr>
+        <tr><td style="padding:32px;">
+          <h2 style="margin:0 0 16px;color:#0b1e3b;font-size:18px;">Welcome, ${name}!</h2>
+          <p style="color:#475569;font-size:14px;line-height:1.6;">
+            Your BRP AMS account has been created. Use the credentials below to log in for the first time.
+          </p>
+          <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:20px;margin:20px 0;">
+            <p style="margin:0 0 8px;color:#64748b;font-size:13px;">Login Email</p>
+            <p style="margin:0 0 16px;color:#0b1e3b;font-size:15px;font-weight:700;">${email}</p>
+            <p style="margin:0 0 8px;color:#64748b;font-size:13px;">Temporary Password</p>
+            <p style="margin:0;color:#1e3a8a;font-size:18px;font-weight:800;letter-spacing:1px;">${tempPassword}</p>
+          </div>
+          <p style="color:#dc2626;font-size:13px;font-weight:700;">Please change your password after first login.</p>
+          <div style="text-align:center;margin:28px 0;">
+            <a href="${FRONTEND}/login"
+              style="background:#1e3a8a;color:#fff;padding:14px 32px;border-radius:8px;
+                     text-decoration:none;font-weight:700;font-size:15px;display:inline-block;">
+              Log In Now
+            </a>
+          </div>
+          <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0 16px;">
+          <p style="color:#94a3b8;font-size:12px;">BRP AMS Automated System · Do not reply</p>
+        </td></tr></table>
+        </td></tr></table></body></html>`
+      );
+      emailOk = true;
+    } catch (e) {
+      console.error('[User Create] Welcome email failed:', e.message);
+    }
 
     const user = await User.findById(id).select('-password_hash -email_verify_token -pwd_reset_token -phone_otp -login_attempts -login_locked_until').lean();
-    res.status(201).json({ success: true, message: 'User created. Activation & password-set email sent.', data: formatUser(user) });
+    res.status(201).json({
+      success: true,
+      message: emailOk ? 'User created. Welcome email sent.' : 'User created. Email not configured — share the temp password manually.',
+      data: formatUser(user),
+      ...(!emailOk && { tempPassword }),
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -231,39 +276,45 @@ router.put('/:id/reset-password', authenticate, authorize('admin', 'super_admin'
     const FRONTEND = process.env.FRONTEND_URL || 'https://ams-frontend-web-niuz.onrender.com';
     const resetUrl = `${FRONTEND}/reset-password?token=${rawResetToken}`;
 
-    await sendMail(target.email, '[BRP AMS] Password Reset — Set Your New Password',
-      `<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
-      <body style="margin:0;padding:0;background:#f2f6f8;font-family:Arial,sans-serif;">
-      <table width="100%" cellpadding="0" cellspacing="0" style="background:#f2f6f8;padding:40px 0;">
-      <tr><td align="center">
-      <table width="560" cellpadding="0" cellspacing="0"
-        style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.08);">
-      <tr><td style="background:#0b1e3b;padding:28px 32px;">
-        <h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;">BRP · AMS</h1>
-        <p style="margin:4px 0 0;color:rgba(255,255,255,.6);font-size:13px;">Attendance Management System</p>
-      </td></tr>
-      <tr><td style="padding:32px;">
-        <h2 style="margin:0 0 16px;color:#0b1e3b;font-size:18px;">Password Reset by Admin</h2>
-        <p style="color:#475569;font-size:14px;line-height:1.6;">
-          Hi <strong>${target.name}</strong>, your password has been reset by an administrator.
-          Click the button below to set a new password.
-        </p>
-        <p style="color:#dc2626;font-size:13px;font-weight:700;">
-          This link expires in <strong>30 minutes</strong>.
-        </p>
-        <div style="text-align:center;margin:28px 0;">
-          <a href="${resetUrl}"
-            style="background:#1e3a8a;color:#fff;padding:14px 32px;border-radius:8px;
-                   text-decoration:none;font-weight:700;font-size:15px;display:inline-block;">
-            Set New Password
-          </a>
-        </div>
-        <p style="color:#94a3b8;font-size:11px;word-break:break-all;">Or copy: ${resetUrl}</p>
-        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0 16px;">
-        <p style="color:#94a3b8;font-size:12px;">BRP AMS Automated System · Do not reply</p>
-      </td></tr></table>
-      </td></tr></table></body></html>`
-    );
+    let emailOk = false;
+    try {
+      await sendMail(target.email, '[BRP AMS] Password Reset — Set Your New Password',
+        `<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+        <body style="margin:0;padding:0;background:#f2f6f8;font-family:Arial,sans-serif;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background:#f2f6f8;padding:40px 0;">
+        <tr><td align="center">
+        <table width="560" cellpadding="0" cellspacing="0"
+          style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.08);">
+        <tr><td style="background:#0b1e3b;padding:28px 32px;">
+          <h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;">BRP · AMS</h1>
+          <p style="margin:4px 0 0;color:rgba(255,255,255,.6);font-size:13px;">Attendance Management System</p>
+        </td></tr>
+        <tr><td style="padding:32px;">
+          <h2 style="margin:0 0 16px;color:#0b1e3b;font-size:18px;">Password Reset by Admin</h2>
+          <p style="color:#475569;font-size:14px;line-height:1.6;">
+            Hi <strong>${target.name}</strong>, your password has been reset by an administrator.
+            Click the button below to set a new password.
+          </p>
+          <p style="color:#dc2626;font-size:13px;font-weight:700;">
+            This link expires in <strong>30 minutes</strong>.
+          </p>
+          <div style="text-align:center;margin:28px 0;">
+            <a href="${resetUrl}"
+              style="background:#1e3a8a;color:#fff;padding:14px 32px;border-radius:8px;
+                     text-decoration:none;font-weight:700;font-size:15px;display:inline-block;">
+              Set New Password
+            </a>
+          </div>
+          <p style="color:#94a3b8;font-size:11px;word-break:break-all;">Or copy: ${resetUrl}</p>
+          <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0 16px;">
+          <p style="color:#94a3b8;font-size:12px;">BRP AMS Automated System · Do not reply</p>
+        </td></tr></table>
+        </td></tr></table></body></html>`
+      );
+      emailOk = true;
+    } catch (mailErr) {
+      console.error('[reset-password] Email failed:', mailErr.message);
+    }
 
     // In-app notification
     try {
@@ -275,7 +326,12 @@ router.put('/:id/reset-password', authenticate, authorize('admin', 'super_admin'
       });
     } catch (_) {}
 
-    res.json({ success: true, message: `Password reset email sent to ${target.name} (${target.email})` });
+    res.json({
+      success: true,
+      message: emailOk
+        ? `Password reset email sent to ${target.name} (${target.email})`
+        : `Password reset for ${target.name} — email delivery failed. Check SMTP configuration.`,
+    });
   } catch (err) {
     console.error('[reset-password]', err);
     res.status(500).json({ success: false, message: 'Server error: ' + err.message });
