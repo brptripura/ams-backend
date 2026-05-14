@@ -1,0 +1,120 @@
+
+> backend@1.0.0 start
+> node server.js
+
+[dotenv@17.3.1] injecting env (16) from .env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+[Mailer] Primary mode: NONE  |  from: BRP-AMS <noreply.brpams@gmail.com>
+
+🚀 BRP Attendance API running on http://localhost:10000
+📊 Health: http://localhost:10000/api/health
+
+Run 'npm run seed' to populate demo data
+
+[0mGET /api/health [32m200[0m 8.558 ms - 93[0m
+✅ MongoDB Atlas connected (pool: 5–100)
+[0mPOST /api/auth/login [32m200[0m 299.071 ms - 776[0m
+[0mPUT /api/users/9ae304ad-2aec-46d9-9cf6-c6d07f9ada84/reset-password [32m200[0m 472.634 ms - 401[0m
+[0mPOST /api/auth/forgot-password [31m500[0m 94.076 ms - 42[0m
+[0mGET /minilogo.svg [33m404[0m 3.330 ms - 151[0m
+[0mPOST /api/auth/forgot-password [31m500[0m 74.175 ms - 42[0m
+[0mPOST /api/auth/forgot-password [31m500[0m 87.771 ms - 42[0m
+[0mGET /main.186e53730a23ad83b9f5.hot-update.json [33m404[0m 0.773 ms - 180[0m
+[0mGET /main.186e53730a23ad83b9f5.hot-update.json [33m404[0m 0.648 ms - 180[0m
+[0mPOST /api/auth/login [32m200[0m 391.678 ms - 776[0m
+[0mGET /api/notifications [32m200[0m 152.224 ms - 42[0m
+[0mGET /api/users [32m200[0m 168.374 ms - 9722[0m
+[0mGET /api/users [32m200[0m 95.452 ms - 9722[0m
+[0mGET /api/notifications [32m200[0m 124.579 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 128.685 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 127.582 ms - 42[0m
+[0mGET /api/users/managers [32m200[0m 97.856 ms - 633[0m
+[0mGET /api/notifications [32m200[0m 118.973 ms - 42[0m
+[0mGET /api/users [32m200[0m 130.537 ms - 9722[0m
+[0mGET /api/users/managers [32m200[0m 102.693 ms - 633[0m
+[0mGET /api/users [32m200[0m 125.237 ms - 9722[0m
+[0mGET /api/notifications [32m200[0m 146.032 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 121.301 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 120.502 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 123.416 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 123.990 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 120.332 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 118.183 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 118.066 ms - 42[0m
+[0mPOST /api/auth/login [32m200[0m 271.804 ms - 776[0m
+[0mGET /api/notifications [32m200[0m 132.938 ms - 42[0m
+[0mGET /api/users [32m200[0m 125.566 ms - 9310[0m
+[0mGET /api/notifications [32m200[0m 129.364 ms - 42[0m
+[0mGET /api/users [32m200[0m 142.073 ms - 9310[0m
+[0mGET /api/notifications [32m200[0m 130.970 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 125.315 ms - 42[0m
+[0mGET /api/users/managers [32m200[0m 89.364 ms - 633[0m
+[0mGET /api/notifications [32m200[0m 123.866 ms - 42[0m
+[0mGET /api/users [32m200[0m 129.011 ms - 9310[0m
+[0mGET /api/users/managers [32m200[0m 121.302 ms - 633[0m
+[0mGET /api/notifications [32m200[0m 132.822 ms - 42[0m
+[0mGET /api/users [32m200[0m 129.710 ms - 9310[0m
+[0mGET /api/notifications [32m200[0m 116.166 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 141.795 ms - 42[0m
+[0mPOST /api/users [32m201[0m 558.336 ms - 650[0m
+[0mGET /api/users/managers [32m200[0m 102.432 ms - 633[0m
+[0mGET /api/users [32m200[0m 132.793 ms - 9718[0m
+[0mGET /api/notifications [32m200[0m 122.007 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 117.949 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 114.139 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 136.444 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 138.498 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 122.839 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 116.251 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 115.456 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 123.763 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 116.634 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 132.542 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 124.306 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 114.405 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 140.617 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 127.945 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 119.104 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 114.159 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 116.805 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 121.689 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 121.733 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 121.752 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 117.426 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 118.284 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 119.532 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 114.673 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 115.750 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 117.737 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 128.147 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 125.509 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 115.748 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 118.158 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 120.668 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 125.393 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 116.663 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 115.261 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 117.881 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 116.401 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 115.844 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 117.309 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 118.608 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 114.924 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 111.772 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 118.285 ms - 42[0m
+[0mPOST /api/auth/logout [32m200[0m 627.810 ms - 52[0m
+[0mGET /api/notifications [33m401[0m 27.872 ms - 52[0m
+[0mGET /api/notifications [32m200[0m 118.247 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 115.377 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 118.434 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 116.093 ms - 42[0m
+[0mGET /api/notifications [32m200[0m 137.176 ms - 42[0m
+[0mGET /api/notifications [0m-[0m - ms - -[0m
+[0mGET /api/notifications [0m-[0m - ms - -[0m
+[0mPOST /api/auth/logout [33m401[0m 12882835.635 ms - 54[0m
+[0mGET /api/notifications [33m401[0m 1.732 ms - 47[0m
+[MissedCheckout Reminder] Cron triggered
+[MissedCheckout Reminder] 1 employees still not checked out for 2026-05-13
+[MissedCheckout Reminder] Cron triggered
+[MissedCheckout Reminder] 1 employees still not checked out for 2026-05-13
+[0mGET /minilogo.svg [33m404[0m 40.741 ms - 151[0m
+[0mGET /main.e665872a1ddf2d1b9e15.hot-update.json [33m404[0m 0.930 ms - 180[0m
