@@ -268,11 +268,19 @@ app.use('/api/reports',           require('./src/routes/reports'));
 app.use('/api/notifications',     require('./src/routes/notifications'));
 app.use('/api/activity',          require('./src/routes/activity'));
 app.use('/api/activity-schedule', require('./src/routes/activity-schedule'));
+app.use('/api/msme',              require('./src/routes/msme'));
+app.use('/api/custom-options',    require('./src/routes/custom-options'));
 
-// Health check
+// Health check — version bump triggers Render redeploy detection
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '1.0.0' });
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    version: '1.2.0',
+    msmeUnfiltered: true,  // confirms MSME route no longer filters by block for employees
+  });
 });
+
 
 // ── Temporary email debug endpoint ────────────────────────────────────────
 app.post('/api/admin/test-email', async (req, res) => {

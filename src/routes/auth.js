@@ -166,8 +166,9 @@ router.post('/login', loginLimiter, [
 
     let passwordValid = user && bcrypt.compareSync(password, user.password_hash);
 
-    // If MongoDB password fails, try Firebase Auth (user may have reset password via Firebase)
-    if (!passwordValid && user && FIREBASE_API_KEY) {
+    // If MongoDB password fails, try Firebase Auth (first-time setup only — skip if user already
+    // changed password via the app, to prevent Firebase from overwriting the new hash).
+    if (!passwordValid && user && FIREBASE_API_KEY && !user.pwd_changed_at) {
       const firebaseOk = await verifyWithFirebase(email, password);
       if (firebaseOk) {
         // Password valid in Firebase — sync back to MongoDB + auto-verify email
@@ -222,12 +223,18 @@ router.post('/login', loginLimiter, [
         name:             user.name,
         email:            user.email,
         role:             user.role,
+        roleType:         user.role_type        || null,
         department:       user.department,
         managerId:        user.manager_id,
         managerName,      managerEmail,
         phone:            user.phone,
+      
+       designation:      user.designation      || null,
+       hrId:             user.hr_id            || null,
         emailVerified:    user.email_verified   || false,
         phoneVerified:    user.phone_verified   || false,
+         faceEnrolled:     user.face_enrolled     || false,  // ← ADD THIS
+      facePhotoUrl:     user.profile_photo_path || null,  // ← ADD THIS
         assignedBlock:    user.assigned_block,
         assignedDistrict: user.assigned_district,
       }
@@ -261,10 +268,13 @@ router.get('/me', authenticate, async (req, res) => {
     const users = await User.aggregate([
       { $match: { _id: req.user.id } },
       { $lookup: { from: 'users', localField: 'manager_id', foreignField: '_id', as: 'manager' } },
+      { $lookup: { from: 'users', localField: 'hr_id',      foreignField: '_id', as: 'hr'      } },
       { $addFields: {
           manager_name:  { $arrayElemAt: ['$manager.name',  0] },
           manager_email: { $arrayElemAt: ['$manager.email', 0] },
           manager_phone: { $arrayElemAt: ['$manager.phone', 0] },
+           hr_name:       { $arrayElemAt: ['$hr.name',       0] },
+      hr_email:      { $arrayElemAt: ['$hr.email',      0] },
       }},
       { $project: { manager: 0, password_hash: 0, email_verify_token: 0, pwd_reset_token: 0, phone_otp: 0 } },
     ]);
@@ -276,15 +286,21 @@ router.get('/me', authenticate, async (req, res) => {
       empId:            u.emp_id,
       name:             u.name,
       email:            u.email,
-      role:             u.role,
+      role:         u.role,
+        roleType:         u.role_type        || null,   // ← ADD
+  designation:      u.designation      || null,   // ← ADD
       department:       u.department,
       managerId:        u.manager_id,
       managerName:      u.manager_name,
       managerEmail:     u.manager_email,
       managerPhone:     u.manager_phone,
+        hrId:             u.hr_id            || null,   // ← ADD
+  hrName:           u.hr_name          || null,   // 
       phone:            u.phone,
       emailVerified:    u.email_verified   || false,
       phoneVerified:    u.phone_verified   || false,
+       faceEnrolled:     u.face_enrolled    || false,  // ← add
+   facePhotoUrl:     u.profile_photo_path || null, // ← add
       createdAt:        u.created_at,
       assignedBlock:    u.assigned_block,
       assignedDistrict: u.assigned_district,
@@ -344,7 +360,7 @@ router.post('/forgot-password', forgotLimiter, [
     // SMTP → Resend → Firebase fallback is handled inside sendMail()
     const rawToken  = generateToken();
     const hashedTok = hashToken(rawToken);
-    const expires   = new Date(Date.now() + 5 * 60 * 1000); // 5 min
+    const expires   = new Date(Date.now() + 30 * 60 * 1000); // 30 min
 
     await User.findByIdAndUpdate(user._id, {
       $set: { pwd_reset_token: hashedTok, pwd_reset_expires: expires }
@@ -358,7 +374,7 @@ router.post('/forgot-password', forgotLimiter, [
           Hi <strong>${user.name}</strong>, we received a request to reset your AMS password.
         </p>
         <p style="color:#475569;font-size:14px;line-height:1.6;">
-          Click the button below. This link expires in <strong>5 minutes</strong>.
+          Click the button below. This link expires in <strong>30 minutes</strong>.
         </p>
         <div style="text-align:center;margin:28px 0;">
           <a href="${resetUrl}"
@@ -438,7 +454,6 @@ router.post('/reset-password-otp', otpLimiter, [
 // ── POST /api/auth/reset-password ────────────────────────────────────────
 router.post('/reset-password', [
   body('token').notEmpty().withMessage('Reset token is required'),
-  body('otp').isLength({ min: 6, max: 6 }).isNumeric().withMessage('OTP must be 6 digits'),
   body('newPassword')
     .isLength({ min: 8 }).withMessage('Password must be at least 8 characters')
     .matches(/[A-Z]/).withMessage('Must contain at least one uppercase letter')
@@ -446,7 +461,7 @@ router.post('/reset-password', [
     .matches(/[!@#$%^&*(),.?":{}|<>]/).withMessage('Must contain at least one special character'),
 ], validate, async (req, res) => {
   try {
-    const { token, otp, newPassword } = req.body;
+    const { token, newPassword } = req.body;
     const hashedTok = hashToken(token);
 
     const user = await User.findOne({
@@ -457,16 +472,6 @@ router.post('/reset-password', [
 
     if (!user)
       return res.status(400).json({ success: false, message: 'Reset link is invalid or has expired.' });
-
-    // Validate OTP
-    if (!user.pwd_reset_otp || !user.pwd_reset_otp_expires)
-      return res.status(400).json({ success: false, message: 'No OTP found. Please request an OTP first.' });
-
-    if (new Date() > user.pwd_reset_otp_expires)
-      return res.status(400).json({ success: false, message: 'OTP expired. Please request a new one.' });
-
-    if (hashToken(otp) !== user.pwd_reset_otp)
-      return res.status(400).json({ success: false, message: 'Invalid OTP' });
 
     await User.findByIdAndUpdate(user._id, {
       $set: {

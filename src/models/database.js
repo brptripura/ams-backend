@@ -14,8 +14,11 @@ const userSchema = new mongoose.Schema({
   email:             { type: String, unique: true, required: true },
   password_hash:     { type: String, required: true },
   role:              { type: String, enum: ['employee', 'manager', 'admin', 'hr', 'super_admin'], required: true },
+  role_type:         { type: String, default: null },
   department:        { type: String, required: true },
   manager_id:        { type: String, ref: 'User', default: null },
+ designation:  { type: String, default: null },
+ hr_id:        { type: String, default: null },
   phone:             { type: String, default: null },
   is_active:         { type: Number, default: 1 },
   assigned_block:    { type: String, default: null },
@@ -45,6 +48,7 @@ profile_photo_uploaded: { type: Date,   default: null },   // when it was upload
   // Legacy single-scan fields kept for backwards compat
   scan_paper_path:     { type: String, default: null },
   scan_paper_uploaded: { type: String, default: null },
+  face_enrolled: { type: Boolean, default: false },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 userSchema.index({ manager_id: 1 });
@@ -154,19 +158,29 @@ const revokedTokenSchema = new mongoose.Schema({
 });
 
 const activitySchema = new mongoose.Schema({
-  _id:              { type: String },
-  user_id:          { type: String, ref: 'User', required: true },
-  msme_name:        { type: String, required: true },
-  udyam_number:     { type: String, required: true },
-  sector:           { type: String, enum: ['Manufacturing', 'Services', 'Trade', 'Agriculture', 'Other'], required: true },
-  support_type:     { type: String, enum: ['Awareness', 'Marketing Linkage', 'Loan Facilitation', 'Training/Workshop', 'Advisory/Other'], required: true },
-  block_name:       { type: String, required: true },
-  latitude:         { type: Number, default: null },
-  longitude:        { type: Number, default: null },
-  location_address: { type: String, default: null },
-  activity_date:    { type: String, required: true },
-  remarks:          { type: String, default: null },
-  resource_type: { type: String }, // 'image' | 'raw'
+  _id:               { type: String },
+  user_id:           { type: String, ref: 'User', required: true },
+  msme_name:         { type: String, required: true },
+  udyam_number:      { type: String, required: true },
+  // Legacy fields kept for backwards compatibility
+  sector:            { type: String, default: null },
+  support_type:      { type: String, default: null },
+  // New hierarchical activity classification
+  activity_type:     { type: String, default: null },
+  sub_activity:      { type: String, default: null },
+  // MSME address (auto-filled from master when available)
+  msme_address:      { type: String, default: null },
+  district:          { type: String, default: null },
+  block_name:        { type: String, required: true },
+  latitude:          { type: Number, default: null },
+  longitude:         { type: Number, default: null },
+  location_address:  { type: String, default: null },
+  activity_date:     { type: String, required: true },
+  remarks:           { type: String, default: null },
+  // Resolution & outcome fields
+  resolved_solution: { type: String, default: null },
+  end_results:       { type: String, default: null },
+  resource_type:     { type: String, default: null }, // 'image' | 'raw'
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 activitySchema.index({ user_id: 1 });
@@ -174,6 +188,28 @@ activitySchema.index({ activity_date: 1 });
 activitySchema.index({ block_name: 1 });
 activitySchema.index({ sector: 1 });
 activitySchema.index({ activity_date: 1, block_name: 1 });
+
+// MSME Master — pre-loaded list of registered MSMEs per block
+const msmeMasterSchema = new mongoose.Schema({
+  _id:          { type: String },
+  msme_name:    { type: String, required: true },
+  udyam_number: { type: String, required: true, unique: true },
+  sector:       { type: String, default: null },
+  block_name:   { type: String, required: true },
+  district:     { type: String, required: true },
+  address:      { type: String, default: null },   // Full address from Udyam registration
+  owner_name:   { type: String, default: null },
+  contact:      { type: String, default: null },
+  latitude:     { type: Number, default: null },
+  longitude:    { type: Number, default: null },
+  nic_code:     { type: String, default: null },
+  is_active:    { type: Boolean, default: true },
+}, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' }, collection: 'msme_masters' });
+
+msmeMasterSchema.index({ block_name: 1 });
+msmeMasterSchema.index({ district: 1 });
+msmeMasterSchema.index({ sector: 1 });
+msmeMasterSchema.index({ is_active: 1 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ACTIVITY DOCUMENT
@@ -250,6 +286,16 @@ const Activity         = mongoose.model('Activity',         activitySchema);
 const ActivityDocument = mongoose.model('ActivityDocument', activityDocumentSchema);
 const ActivitySchedule = mongoose.model('ActivitySchedule', activityScheduleSchema);
 const ScheduleDocument = mongoose.model('ScheduleDocument', scheduleDocumentSchema);
+const MsmeMaster       = mongoose.model('MsmeMaster',       msmeMasterSchema);
+// ── Custom Dropdown Options (shared across all users) ─────────────────────
+const customOptionSchema = new mongoose.Schema({
+  _id:      { type: String },
+  category: { type: String, required: true, index: true },  // e.g. 'ams_custom_activity_types'
+  value:    { type: String, required: true },
+  added_by: { type: String, ref: 'User', default: null },
+}, { timestamps: true });
+customOptionSchema.index({ category: 1, value: 1 }, { unique: true });
+const CustomOption = mongoose.model('CustomOption', customOptionSchema);
 
 // ── Connect ───────────────────────────────────────────────────────────────
 
@@ -274,6 +320,10 @@ module.exports = {
   RevokedToken,
   Activity,
   ActivityDocument,
+   MsmeMaster,
+
+  CustomOption,
+  connectionPromise,
   ActivitySchedule,
   ScheduleDocument,
   connectionPromise,
