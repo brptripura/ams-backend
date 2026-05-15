@@ -81,12 +81,6 @@ app.use(cors({
       return cb(null, true);
     }
 
-    // allow any *.onrender.com subdomain that belongs to this project
-    // (covers any future Render service URLs automatically)
-    if (origin.endsWith('.onrender.com')) {
-      return cb(null, true);
-    }
-
     // allow explicitly listed origins
     if (ALLOWED_ORIGINS.has(origin)) {
       return cb(null, true);
@@ -107,13 +101,13 @@ app.use((req, res, next) => {
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Permissions-Policy', 'microphone=()');
   next();
 });
 app.use(morgan('dev'));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
-app.use("/uploads", express.static("uploads"));
+// NOTE: /uploads static serve removed — all files served via Cloudinary URLs only
 app.use((req, res, next) => {
   if (req.body) req.body = mongoSanitize.sanitize(req.body, { replaceWith: '_' });
   if (req.query && typeof req.query === 'object') {

@@ -269,8 +269,10 @@ if (existing) {
     if (dutyType === 'On Duty' && !sector)
       return res.status(400).json({ success: false, message: 'Sector is required for On Duty' });
 
-    // Get the current user's manager_id
-    const currentUser = await User.findById(req.user.id).select('manager_id').lean();
+    // Get the current user's manager_id + face data
+    const currentUser = await User.findById(req.user.id)
+      .select('manager_id face_descriptor face_enrolled face_photo_url')
+      .lean();
     const managerId   = currentUser?.manager_id || null;
 
     const id = uuidv4();
@@ -281,15 +283,43 @@ if (existing) {
     const checkinTime = (capturedAt && timeRe.test(capturedAt)) ? capturedAt : istTimeStr();
     const checkinDate = (capturedDate && dateRe.test(capturedDate)) ? capturedDate : today;
 
-    const selfiePath = req.file
-      ? await uploadFile(req.file.buffer, 'ams/selfies', req.file.originalname, req.file.mimetype)
-      : null;
+    let selfiePath = null;
+    let faceVerified = null;
+    let faceDistance = null;
 
-    // Face verification fields (computed client-side, sent as form fields)
-    const faceVerifiedRaw = req.body.faceVerified;
-    const faceDistanceRaw = req.body.faceDistance;
-    const faceVerified = faceVerifiedRaw === 'true' ? true : faceVerifiedRaw === 'false' ? false : null;
-    const faceDistance = faceDistanceRaw ? parseFloat(faceDistanceRaw) : null;
+    if (req.file) {
+      selfiePath = await uploadFile(req.file.buffer, 'ams/selfies', req.file.originalname, req.file.mimetype);
+
+      if (!currentUser.face_enrolled) {
+        // ── First ever check-in: register this selfie as the face reference ──
+        await User.findByIdAndUpdate(req.user.id, {
+          $set: { face_photo_url: selfiePath, face_enrolled: true, face_enrolled_at: new Date() }
+        });
+        faceVerified = true; // first enrollment always passes
+      } else {
+        // ── Subsequent check-ins: server-side descriptor comparison ──────────
+        const liveDescRaw = req.body.faceDescriptorLive;
+        if (liveDescRaw && currentUser.face_descriptor?.length === 128) {
+          try {
+            const liveDesc = JSON.parse(liveDescRaw);
+            if (Array.isArray(liveDesc) && liveDesc.length === 128) {
+              const stored = currentUser.face_descriptor;
+              const dist = Math.sqrt(liveDesc.reduce((sum, v, i) => sum + (v - stored[i]) ** 2, 0));
+              faceDistance = Math.round(dist * 10000) / 10000;
+              const threshold = parseFloat(process.env.FACE_THRESHOLD) || 0.5;
+              faceVerified = dist <= threshold;
+            }
+          } catch {}
+        }
+        // Fallback to client-reported value only if descriptor not provided
+        if (faceVerified === null) {
+          const fvRaw = req.body.faceVerified;
+          faceVerified = fvRaw === 'true' ? true : fvRaw === 'false' ? false : null;
+          const fdRaw = req.body.faceDistance;
+          faceDistance = fdRaw ? parseFloat(fdRaw) : null;
+        }
+      }
+    }
 
     await AttendanceRecord.create({
       _id:              id,
@@ -466,9 +496,33 @@ else {
 }
 
     const { latitude, longitude, locationAddress, capturedAt } = req.body;
-    const checkoutSelfiePath = req.file
-      ? await uploadFile(req.file.buffer, 'ams/selfies', req.file.originalname, req.file.mimetype)
-      : null;
+    let checkoutSelfiePath = null;
+    let checkoutFaceVerified = null;
+    let checkoutFaceDistance = null;
+
+    if (req.file) {
+      checkoutSelfiePath = await uploadFile(req.file.buffer, 'ams/selfies', req.file.originalname, req.file.mimetype);
+      // Server-side descriptor comparison on checkout
+      const coUser = await User.findById(req.user.id).select('face_descriptor face_enrolled').lean();
+      const liveDescRaw = req.body.faceDescriptorLive;
+      if (liveDescRaw && coUser?.face_descriptor?.length === 128) {
+        try {
+          const liveDesc = JSON.parse(liveDescRaw);
+          if (Array.isArray(liveDesc) && liveDesc.length === 128) {
+            const stored = coUser.face_descriptor;
+            const dist = Math.sqrt(liveDesc.reduce((sum, v, i) => sum + (v - stored[i]) ** 2, 0));
+            checkoutFaceDistance = Math.round(dist * 10000) / 10000;
+            checkoutFaceVerified = dist <= (parseFloat(process.env.FACE_THRESHOLD) || 0.5);
+          }
+        } catch {}
+      }
+      if (checkoutFaceVerified === null) {
+        const fvRaw = req.body.faceVerified;
+        checkoutFaceVerified = fvRaw === 'true' ? true : fvRaw === 'false' ? false : null;
+        const fdRaw = req.body.faceDistance;
+        checkoutFaceDistance = fdRaw ? parseFloat(fdRaw) : null;
+      }
+    }
 
     // Support offline sync: use capturedAt (HH:MM) if provided (must be in the past)
     const timeRe = /^\d{2}:\d{2}$/;
@@ -483,18 +537,20 @@ else {
     }
 
     await AttendanceRecord.findByIdAndUpdate(record._id, {
-  $set: {
-    checkout_time:        checkoutTime,
-    checkout_lat:         parseFloat(latitude)  || record.latitude,
-    checkout_lng:         parseFloat(longitude) || record.longitude,
-     checkout_selfie_path: checkoutSelfiePath,   // ← Cloudinary URL
-    status:               'Pending',
-    submitted_at:         now,
-    worked_hours:         workedHours,
-    leave_type:           leaveType,
-    leave_status:         leaveType ? "Pending" : null
-  }
-});
+      $set: {
+        checkout_time:         checkoutTime,
+        checkout_lat:          parseFloat(latitude)  || record.latitude,
+        checkout_lng:          parseFloat(longitude) || record.longitude,
+        checkout_selfie_path:  checkoutSelfiePath,
+        checkout_face_verified: checkoutFaceVerified,
+        checkout_face_distance: isNaN(checkoutFaceDistance) ? null : checkoutFaceDistance,
+        status:                'Pending',
+        submitted_at:          now,
+        worked_hours:          workedHours,
+        leave_type:            leaveType,
+        leave_status:          leaveType ? 'Pending' : null,
+      }
+    });
 
     // Notify manager
     if (record.manager_id) {

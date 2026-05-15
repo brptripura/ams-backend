@@ -653,12 +653,21 @@ router.post('/bulk-upload', authenticate, authorize('super_admin', 'admin'), upl
           continue;
         }
 
+        // Privilege check: admins cannot bulk-create super_admin or admin accounts
+        if (req.user.role === 'admin' && ['admin', 'super_admin'].includes(role)) {
+          results.errors.push({ row: rowNum, reason: `Role "${role}" cannot be assigned by an admin via bulk upload` });
+          results.skipped++;
+          continue;
+        }
+
         let manager_id = null;
         if (mgrRef) {
+          // Escape special regex characters to prevent ReDoS
+          const escapedRef = mgrRef.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
           const mgr = await User.findOne({
             $or: [
-              { emp_id: { $regex: new RegExp(`^${mgrRef}$`, 'i') } },
-              { name:   { $regex: new RegExp(`^${mgrRef}$`, 'i') } },
+              { emp_id: { $regex: new RegExp(`^${escapedRef}$`, 'i') } },
+              { name:   { $regex: new RegExp(`^${escapedRef}$`, 'i') } },
             ],
             is_active: 1,
           }).select('_id').lean();
@@ -675,12 +684,12 @@ router.post('/bulk-upload', authenticate, authorize('super_admin', 'admin'), upl
 
         if (existing) {
           const update = { name, email, role, department: dept, phone, assigned_block: block, assigned_district: district, manager_id };
-          if (password && password.length >= 6) update.password_hash = bcrypt.hashSync(password, 10);
+          if (password && password.length >= 8) update.password_hash = bcrypt.hashSync(password, 12);
           await User.findByIdAndUpdate(existing._id, { $set: update });
           results.updated++;
         } else {
-          if (!password || password.length < 6) {
-            results.errors.push({ row: rowNum, reason: `Password required for new user "${empId}" (min 6 chars)` });
+          if (!password || password.length < 8) {
+            results.errors.push({ row: rowNum, reason: `Password required for new user "${empId}" (min 8 chars)` });
             results.skipped++;
             continue;
           }
@@ -689,7 +698,7 @@ router.post('/bulk-upload', authenticate, authorize('super_admin', 'admin'), upl
             emp_id:            empId,
             name,
             email,
-            password_hash:     bcrypt.hashSync(password, 10),
+            password_hash:     bcrypt.hashSync(password, 12),
             role,
             department:        dept,
             phone,

@@ -91,7 +91,11 @@ router.post('/register-super-admin', [
     if (!expectedSecret) {
       return res.status(500).json({ success: false, message: 'REGISTER_SECRET not set in .env' });
     }
-    if (!secret || secret !== expectedSecret) {
+    const secretBuf   = Buffer.from(secret);
+    const expectedBuf = Buffer.from(expectedSecret);
+    const match = secretBuf.length === expectedBuf.length &&
+      crypto.timingSafeEqual(secretBuf, expectedBuf);
+    if (!match) {
       return res.status(403).json({ success: false, message: 'Invalid or missing register secret' });
     }
 
@@ -190,10 +194,13 @@ router.post('/login', loginLimiter, [
     }
 
     // Reset failed login attempts on successful login
-    await User.findByIdAndUpdate(user._id, { $set: { failed_login_attempts: 0, login_locked_until: null } });
+    const jti = uuidv4();
+    await User.findByIdAndUpdate(user._id, {
+      $set: { failed_login_attempts: 0, login_locked_until: null, active_session_jti: jti }
+    });
 
     const token = jwt.sign(
-      { id: user._id, role: user.role, emp_id: user.emp_id },
+      { id: user._id, role: user.role, emp_id: user.emp_id, jti },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
     );
@@ -252,6 +259,7 @@ router.post('/logout', authenticate, async (req, res) => {
       { $setOnInsert: { _id: tokenHash, revoked_at: new Date() } },
       { upsert: true }
     );
+    await User.findByIdAndUpdate(req.user.id, { $set: { active_session_jti: null } });
     await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'LOGOUT', ip_address: req.ip });
     res.json({ success: true, message: 'Logged out successfully' });
   } catch (err) {
@@ -341,15 +349,23 @@ router.put('/change-password', authenticate, [
     // Keep only last 2 hashes in history (push current → trim to 2)
     const updatedHistory = [user.password_hash, ...history].slice(0, 2);
 
+    // Revoke the current token and clear the session jti
+    const tokenHash = crypto.createHash('sha256').update(req.token).digest('hex');
+    await RevokedToken.updateOne(
+      { _id: tokenHash },
+      { $setOnInsert: { _id: tokenHash, revoked_at: new Date() } },
+      { upsert: true }
+    );
     await User.findByIdAndUpdate(req.user.id, {
       $set: {
-        password_hash:    bcrypt.hashSync(newPassword, 12),
-        pwd_changed_at:   new Date(),
-        password_history: updatedHistory,
+        password_hash:      bcrypt.hashSync(newPassword, 12),
+        pwd_changed_at:     new Date(),
+        password_history:   updatedHistory,
+        active_session_jti: null,
       }
     });
     await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'CHANGE_PASSWORD', ip_address: req.ip });
-    res.json({ success: true, message: 'Password changed successfully' });
+    res.json({ success: true, message: 'Password changed successfully. Please log in again.' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -581,9 +597,21 @@ input[type=password]:focus{border-color:#1E3A8A;box-shadow:0 0 0 3px rgba(30,58,
     : '';
 
   return page('🔐', 'Set New Password', `
-    <p style="font-size:14px;color:#64748b;text-align:center;margin-bottom:20px;line-height:1.6">
-      Hi <strong style="color:#1E3A8A">${safeName}</strong>, enter your new password below.
+    <p style="font-size:14px;color:#64748b;text-align:center;margin-bottom:16px;line-height:1.6">
+      Hi <strong style="color:#1E3A8A">${safeName}</strong>, reset your password below.
     </p>
+
+    <!-- Deep-link button: opens AMS mobile app directly if installed -->
+    <a href="amsbrp://reset-password?token=${safeToken}"
+       style="display:block;width:100%;padding:13px;border-radius:10px;background:linear-gradient(135deg,#059669,#10b981);
+              color:#fff;text-align:center;font-size:15px;font-weight:700;text-decoration:none;
+              box-sizing:border-box;margin-bottom:12px">
+      📱 Open in AMS App
+    </a>
+    <p style="font-size:11px;color:#94a3b8;text-align:center;margin-bottom:18px">
+      If the app doesn't open, use the form below.
+    </p>
+
     ${errBlock}
     <form method="POST" action="${BACKEND}/api/auth/reset-password-form">
       <input type="hidden" name="token" value="${safeToken}">
@@ -1131,11 +1159,15 @@ router.post('/aadhaar/init', authenticate, [
 // Otherwise: 80% pass rate (dev/staging randomness).
 // In production: replace body with UIDAI eKYC API call.
 router.post('/aadhaar/face-check', authenticate, async (req, res) => {
+  // Block mock face-check in production — must integrate real UIDAI eKYC
+  if (process.env.NODE_ENV === 'production' && process.env.AADHAAR_MOCK_FACE_PASS === undefined) {
+    return res.status(503).json({ success: false, message: 'Aadhaar face verification not available. Please use OTP verification.' });
+  }
   try {
     let faceMatch;
     if (process.env.AADHAAR_MOCK_FACE_PASS === 'true')       faceMatch = true;
     else if (process.env.AADHAAR_MOCK_FACE_PASS === 'false') faceMatch = false;
-    else faceMatch = Math.random() > 0.2; // 80% pass in dev
+    else faceMatch = Math.random() > 0.2;
 
     await AuditLog.create({
       _id: uuidv4(), user_id: req.user.id,
@@ -1186,9 +1218,7 @@ router.post('/aadhaar/send-otp', authenticate, aadhaarOtpLimiter, async (req, re
     }
 
     await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'AADHAAR_OTP_SENT', ip_address: req.ip });
-    const resp = { success: true, message: 'OTP sent to your registered email' };
-    if (process.env.NODE_ENV !== 'production') resp._testOtp = otp;
-    res.json(resp);
+    res.json({ success: true, message: 'OTP sent to your registered email' });
   } catch (err) {
     console.error('[AADHAAR_SEND_OTP]', err);
     res.status(500).json({ success: false, message: 'Server error' });
