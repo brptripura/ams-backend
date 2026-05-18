@@ -14,11 +14,11 @@ const userSchema = new mongoose.Schema({
   email:             { type: String, unique: true, required: true },
   password_hash:     { type: String, required: true },
   role:              { type: String, enum: ['employee', 'manager', 'admin', 'hr', 'super_admin'], required: true },
+  role_type:         { type: String, default: null },
   department:        { type: String, required: true },
   manager_id:        { type: String, ref: 'User', default: null },
-  hr_id:             { type: String, ref: 'User', default: null },   // Competent Authority (HR assigned)
-  designation:       { type: String, default: null },                // Job designation / title
-  role_type:         { type: String, enum: ['BRP', 'URP'], default: null }, // BRP or URP
+ designation:  { type: String, default: null },
+ hr_id:        { type: String, default: null },
   phone:             { type: String, default: null },
   is_active:         { type: Number, default: 1 },
   assigned_block:    { type: String, default: null },
@@ -33,12 +33,8 @@ const userSchema = new mongoose.Schema({
   // ── Password reset OTP ───────────────────────────────────────────────
   pwd_reset_otp:        { type: String,  default: null },  // hashed OTP
   pwd_reset_otp_expires:{ type: Date,    default: null },
-  // ── Active session token ID (rotates on every login/logout) ─────────
-  active_session_jti:   { type: String,  default: null },
   // ── Password changed timestamp (for global logout) ─────────────────
   pwd_changed_at:       { type: Date,    default: null },
-  // ── Password history (last 2 hashes — prevent reuse) ────────────────
-  password_history:     { type: [String], default: [] },
   // ── Phone OTP ────────────────────────────────────────────────────────
   phone_otp:            { type: String,  default: null },  // hashed OTP
   phone_otp_expires:    { type: Date,    default: null },
@@ -46,36 +42,13 @@ const userSchema = new mongoose.Schema({
   // ── Account lockout ─────────────────────────────────────────────────
   failed_login_attempts: { type: Number, default: 0 },
   login_locked_until:    { type: Date, default: null },
-  // ── Scan papers (array, max 2 per month) ────────────────────────────
-  scan_papers: {
-    type: [{
-      path:        { type: String, required: true },   // Cloudinary URL
-      month:       { type: String, required: true },   // "2026-04"
-      month_label: { type: String, default: null },    // "April 2026"
-      file_name:   { type: String, default: null },    // original filename
-      file_index:  { type: Number, default: 0 },       // 0 or 1
-      uploaded_at: { type: Date,   default: Date.now },
-    }],
-    default: [],
-  },
+// ── Profile Photo (uploaded once, locked) ─────────────────────────────────
+profile_photo_path:     { type: String, default: null },   // Cloudinary URL
+profile_photo_uploaded: { type: Date,   default: null },   // when it was uploaded
   // Legacy single-scan fields kept for backwards compat
   scan_paper_path:     { type: String, default: null },
   scan_paper_uploaded: { type: String, default: null },
-  // ── Face biometric enrolment (face-api.js, no 3rd-party service) ────────
-  face_descriptor:     { type: [Number], default: null },  // 128-dim Float32 array
-  face_enrolled:       { type: Boolean, default: false },
-  face_enrolled_at:    { type: Date,    default: null },
-  face_photo_url:      { type: String,  default: null },   // Cloudinary URL of ref selfie
-  // ── Aadhaar (stored encrypted — UIDAI compliance) ────────────────────────
-  aadhaar_last4:             { type: String,  default: null },   // "1234" — last 4 digits for display
-  aadhaar_submitted:         { type: Boolean, default: false },  // number entered by user
-  aadhaar_enc:               { type: String,  default: null },   // AES-256-GCM encrypted full number
-  aadhaar_verified:          { type: Boolean, default: false },  // OTP or face-check passed
-  aadhaar_verification_type: { type: String,  enum: ['FACE', 'OTP'], default: null },
-  aadhaar_verified_at:       { type: Date,    default: null },
-  aadhaar_age:               { type: Number,  default: null },   // from eKYC (future)
-  aadhaar_otp_hash:          { type: String,  default: null },   // bcrypt hash of pending OTP
-  aadhaar_otp_expires:       { type: Date,    default: null },
+  face_enrolled: { type: Boolean, default: false },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 userSchema.index({ manager_id: 1 });
@@ -130,10 +103,7 @@ const attendanceRecordSchema = new mongoose.Schema({
   hr_actioned_by:       { type: String, ref: 'User', default: null },
   hr_actioned_at:       { type: Date, default: null },
   overridden_by:        { type: String, enum: ['hr', 'super_admin', null], default: null },
-  override_remark:      { type: String, default: null },
-  // ── Face biometric verification (recorded per check-in / check-out) ──────
-  face_verified:        { type: Boolean, default: null },  // null=not checked, true/false
-  face_distance:        { type: Number,  default: null },  // euclidean dist (audit)
+override_remark:      { type: String, default: null },
 signed_reports: [{
     path:        String,
     name:        String,
@@ -241,7 +211,11 @@ msmeMasterSchema.index({ district: 1 });
 msmeMasterSchema.index({ sector: 1 });
 msmeMasterSchema.index({ is_active: 1 });
 
-
+// ─────────────────────────────────────────────────────────────────────────────
+// ACTIVITY DOCUMENT
+// file_path  → Cloudinary secure URL (was: local filename like act_userid_123.jpg)
+// public_id  → Cloudinary public_id for deletion (NEW field)
+// ─────────────────────────────────────────────────────────────────────────────
 const activityDocumentSchema = new mongoose.Schema({
   _id:         { type: String },
   activity_id: { type: String, ref: 'Activity', required: true },
@@ -264,7 +238,7 @@ const activityScheduleSchema = new mongoose.Schema({
   scheduled_date:   { type: String, required: true },
   location:         { type: String, default: null },
   assigned_to:      { type: String, ref: 'User', default: null },
-  employee_name:    { type: String, default: null },
+  manager_id:       { type: String, ref: 'User', default: null },
   created_by:       { type: String, ref: 'User', required: true },
   assigned_by:      { type: String, ref: 'User', default: null }, // who assigned this activity
   assigned_by_name: { type: String, default: null },               // quick-display name
@@ -303,14 +277,6 @@ scheduleDocumentSchema.index({ schedule_id: 1 });
 
 // ── Models ────────────────────────────────────────────────────────────────
 
-// ── Password Reset Token ──────────────────────────────────────────────────
-const passwordResetTokenSchema = new mongoose.Schema({
-  _id:        { type: String },            // token hex string
-  user_id:    { type: String, required: true },
-  expires_at: { type: Date,   required: true, index: { expires: 0 } }, // TTL auto-delete
-}, { _id: false, versionKey: false });
-passwordResetTokenSchema.index({ user_id: 1 });
-
 const User             = mongoose.model('User',             userSchema);
 const AttendanceRecord = mongoose.model('AttendanceRecord', attendanceRecordSchema);
 const Notification     = mongoose.model('Notification',     notificationSchema);
@@ -321,8 +287,6 @@ const ActivityDocument = mongoose.model('ActivityDocument', activityDocumentSche
 const ActivitySchedule = mongoose.model('ActivitySchedule', activityScheduleSchema);
 const ScheduleDocument = mongoose.model('ScheduleDocument', scheduleDocumentSchema);
 const MsmeMaster       = mongoose.model('MsmeMaster',       msmeMasterSchema);
-const PasswordResetToken = mongoose.model('PasswordResetToken', passwordResetTokenSchema);
-
 // ── Custom Dropdown Options (shared across all users) ─────────────────────
 const customOptionSchema = new mongoose.Schema({
   _id:      { type: String },
@@ -356,10 +320,11 @@ module.exports = {
   RevokedToken,
   Activity,
   ActivityDocument,
+   MsmeMaster,
+
+  CustomOption,
+  connectionPromise,
   ActivitySchedule,
   ScheduleDocument,
-  MsmeMaster,
-  PasswordResetToken,
-  CustomOption,
   connectionPromise,
 };

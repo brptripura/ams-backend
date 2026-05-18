@@ -48,51 +48,21 @@ app.use(helmet({
   frameguard: { action: 'deny' },
 }));
 
-// Build the allowed-origins list from env + hardcoded known URLs.
-// All historical Render service URLs are included so old deployments still work.
-const ALLOWED_ORIGINS = new Set([
-  // Current URLs (always allowed)
-  'https://brp-mobile.onrender.com',
-  'https://ams-frontend-web.onrender.com',
-  'https://ams-frontend-web-niuz.onrender.com',
-  // Historical backend URLs (kept so any outstanding JWT/cookie sessions still work)
-  'https://ams-backend-3it1.onrender.com',
-  'https://ams-backend-1-yvgm.onrender.com',
-  // From env (takes effect after Render redeploy)
-  process.env.FRONTEND_URL,
-  process.env.BACKEND_URL,
-  // Local dev
+const ALLOWED_ORIGINS = [
+  process.env.FRONTEND_URL || 'http://localhost:3000',
+  process.env.BACKEND_URL  || 'https://ams-backend-1-yvgm.onrender.com',
   'http://localhost:3000',
   'http://localhost:3001',
-  'http://localhost:4001',
-  'http://localhost:10000',
   'capacitor://localhost',
   'http://localhost',
   'https://localhost',
-].filter(Boolean));
-
+];
 app.use(cors({
   origin: (origin, cb) => {
-    // allow requests with no origin (mobile apps, curl, Postman)
-    if (!origin) return cb(null, true);
-
-    // allow any localhost / 127.0.0.1 (local dev)
-    if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
-      return cb(null, true);
-    }
-
-    // allow explicitly listed origins
-    if (ALLOWED_ORIGINS.has(origin)) {
-      return cb(null, true);
-    }
-
-    console.warn('[CORS] Blocked origin:', origin);
-    return cb(new Error('Not allowed by CORS'));
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    cb(new Error('Not allowed by CORS'));
   },
   credentials: true,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-  exposedHeaders: ["Content-Disposition"],
 }));
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -101,13 +71,12 @@ app.use((req, res, next) => {
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Permissions-Policy', 'microphone=()');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   next();
 });
 app.use(morgan('dev'));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
-// NOTE: /uploads static serve removed — all files served via Cloudinary URLs only
 app.use((req, res, next) => {
   if (req.body) req.body = mongoSanitize.sanitize(req.body, { replaceWith: '_' });
   if (req.query && typeof req.query === 'object') {
@@ -288,55 +257,8 @@ connectionPromise.then(async () => {
   pruneRevokedTokens();
   setInterval(pruneRevokedTokens, 60 * 60 * 1000);
   require('./src/utils/mailer');
-
-  // Process any Draft records missed while server was down (Render sleep)
-  try {
-    const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-    const missed = await AttendanceRecord.find({
-      date:          { $lt: todayIST },
-      status:        'Draft',
-      checkout_time: null,
-      duty_type:     { $ne: 'Leave' },
-    }).lean();
-
-    if (missed.length > 0) {
-      console.log(`[Startup] Found ${missed.length} Draft records from previous days — auto-processing…`);
-      for (const record of missed) {
-        const checkinDT  = new Date(`${record.date}T${record.checkin_time}:00+05:30`);
-        const checkoutDT = new Date(`${record.date}T23:58:00+05:30`);
-        const workedHrs  = Math.max(0, Math.round(((checkoutDT - checkinDT) / 3600000) * 100) / 100);
-
-        await AttendanceRecord.findByIdAndUpdate(record._id, {
-          $set: {
-            checkout_time:    '23:58',
-            status:           'Approved',
-            submitted_at:     new Date(),
-            is_auto_checkout: true,
-            checkout_remarks: 'Auto checkout — server was offline during scheduled run',
-            worked_hours:     workedHrs > 0 ? workedHrs : null,
-            leave_type:       workedHrs < 4 ? 'Half Day' : null,
-            leave_status:     workedHrs < 4 ? 'Pending'  : null,
-          },
-        });
-
-        if (record.manager_id) {
-          const emp = await User.findById(record.emp_id).select('name').lean();
-          await Notification.create({
-            _id:               uuidv4(),
-            user_id:           record.manager_id,
-            title:             'Missed Auto Checkout',
-            message:           `${emp?.name || 'Employee'} was auto-checked out (server recovery) on ${record.date}.`,
-            type:              'warning',
-            related_record_id: record._id,
-          });
-        }
-      }
-      console.log(`[Startup] Auto-processed ${missed.length} missed Draft records`);
-    }
-  } catch (err) {
-    console.error('[Startup] Missed checkout recovery error:', err.message);
-  }
 });
+
 // ── Routes ────────────────────────────────────────────────────────────────
 const attendanceRouter = require('./src/routes/attendance');
 app.use('/api/auth',              require('./src/routes/auth'));
@@ -359,6 +281,41 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+
+// ── Temporary email debug endpoint ────────────────────────────────────────
+app.post('/api/admin/test-email', async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ success: false, message: 'email required' });
+  const results = {};
+
+  try {
+    const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY;
+    if (FIREBASE_API_KEY) {
+      const fbRes = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${FIREBASE_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestType: 'PASSWORD_RESET', email }),
+      });
+      const fbData = await fbRes.json();
+      results.firebase = { status: fbRes.status, ok: fbRes.ok, data: fbData };
+    } else {
+      results.firebase = { status: 'skipped', reason: 'no FIREBASE_API_KEY' };
+    }
+  } catch (err) {
+    results.firebase = { error: err.message };
+  }
+
+  try {
+    const { sendMail, mode } = require('./src/utils/mailer');
+    results.mailer_mode = mode;
+    await sendMail(email, '[BRP AMS] Email Test', '<h2>BRP-AMS Email Test</h2><p>This confirms email delivery is working. Time: ' + new Date().toISOString() + '</p>');
+    results.smtp = { status: 'sent' };
+  } catch (err) {
+    results.smtp = { error: err.message };
+  }
+
+  res.json({ success: true, results });
+});
 
 // ── Error Handler ─────────────────────────────────────────────────────────
 app.use((err, req, res, next) => {

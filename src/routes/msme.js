@@ -61,6 +61,7 @@ const ALL_BLOCKS = Object.entries(DISTRICT_BLOCKS).flatMap(([district, blocks]) 
 // NIC code prefix → sector
 function nicToSector(activityDetail) {
   try {
+    if (!activityDetail || typeof activityDetail !== 'string') return 'Other';
     const parsed = JSON.parse(activityDetail.replace(/&quot;/g, '"'));
     const nic = String(parsed[0]?.NIC5DigitId || '');
     const prefix = parseInt(nic.substring(0, 2), 10);
@@ -74,6 +75,7 @@ function nicToSector(activityDetail) {
 
 // Extract block name from address string: "Block:- BlockName, City:- ..."
 function extractBlock(address) {
+  if (!address || typeof address !== 'string') return null;
   const m = address.match(/Block\s*:-\s*([^,\n]+)/i);
   if (!m) return null;
   let raw = m[1].replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
@@ -150,6 +152,45 @@ router.get('/debug', async (req, res) => {
   }
 });
 
+// ── GET /api/msme/by-block?block=Ambassa ──────────────────────────────────
+// Lightweight endpoint used by ActivityCapture dropdown.
+// Returns only name + udyam + address for a single block — fast for mobile.
+router.get('/by-block', authenticate, async (req, res) => {
+  try {
+    const { block } = req.query;
+    if (!block) return res.json({ success: true, data: [] });
+
+    const isEmployee = req.user.role === 'employee';
+    const isManager  = req.user.role === 'manager';
+    if (isEmployee || isManager) {
+      const userDoc = await User.findById(req.user.id)
+        .select('assigned_block assigned_district').lean();
+      let empDistrict = userDoc?.assigned_district;
+      if (!empDistrict && userDoc?.assigned_block) {
+        for (const [dist, blocks] of Object.entries(DISTRICT_BLOCKS)) {
+          if (blocks.includes(userDoc.assigned_block)) { empDistrict = dist; break; }
+        }
+      }
+      if (empDistrict) {
+        const allowed = DISTRICT_BLOCKS[empDistrict] || [];
+        if (allowed.length && !allowed.includes(block)) {
+          return res.json({ success: true, data: [] });
+        }
+      }
+    }
+
+    const msmes = await MsmeMaster.find({ block_name: block, is_active: true })
+      .select('msme_name udyam_number block_name district address sector')
+      .sort({ msme_name: 1 })
+      .lean();
+
+    res.json({ success: true, data: msmes, total: msmes.length });
+  } catch (err) {
+    console.error('[GET /msme/by-block]', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 // ── GET /api/msme ──────────────────────────────────────────────────────────
 router.get('/', authenticate, async (req, res) => {
   try {
@@ -160,12 +201,8 @@ router.get('/', authenticate, async (req, res) => {
     const isManager  = req.user.role === 'manager';
 
     if (isEmployee || isManager) {
-      // For employees/managers: scope to their assigned district
-      // Loaded once on page mount, filtered client-side — no per-keystroke API calls
       const userDoc = await User.findById(req.user.id)
         .select('assigned_block assigned_district').lean();
-
-      // Use assigned_district directly, or infer it from assigned_block
       let empDistrict = userDoc?.assigned_district;
       if (!empDistrict && userDoc?.assigned_block) {
         for (const [dist, blocks] of Object.entries(DISTRICT_BLOCKS)) {
@@ -173,9 +210,7 @@ router.get('/', authenticate, async (req, res) => {
         }
       }
       if (empDistrict) filter.district = empDistrict;
-      // If neither assigned, returns all (admin should assign district/block)
     } else {
-      // Admins/HR/super_admin: respect query filters
       if (block)    filter.block_name = block;
       if (district) filter.district   = district;
     }
@@ -184,7 +219,7 @@ router.get('/', authenticate, async (req, res) => {
     if (search) filter.msme_name = { $regex: search.trim(), $options: 'i' };
 
     const msmes = await MsmeMaster.find(filter)
-      .select('msme_name udyam_number district sector address block_name')
+      .select('msme_name udyam_number block_name district sector address owner_name contact')
       .sort({ msme_name: 1 })
       .limit(5000)
       .lean();
@@ -261,6 +296,7 @@ router.put('/:id', authenticate, authorize('admin', 'super_admin'), async (req, 
 
 // ── POST /api/msme/bulk-upload ─────────────────────────────────────────────
 // Accepts the XLS/HTML file exported from Udyam portal
+// UPDATED: Now prioritizes the BLOCK column if present, falls back to address extraction
 router.post('/bulk-upload', authenticate, authorize('admin', 'super_admin'), upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
 
@@ -286,55 +322,97 @@ router.post('/bulk-upload', authenticate, authorize('admin', 'super_admin'), upl
       wb = XLSX.read(html, { type: 'string' });
     }
 
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    // ── Collect records from ALL sheets ──────────────────────────────────────
+    // Your Excel has one sheet per district (DHALAI, GOMATI, KHOWAI, etc.)
+    // We iterate every sheet so all ~53k records are imported, not just sheet 1.
+    const allRecords = []; // { udyam, name, address, distRaw, activity, lat, lng, blockFromExcel }
 
-    // Find header row
-    let headerIdx = 0;
-    let colMap = {};
-    for (let i = 0; i < Math.min(5, data.length); i++) {
-      const row = data[i].map(c => String(c).trim().toLowerCase());
-      if (row.includes('udyogaadharno') || row.includes('enterprisename') || row.includes('enterprise_name')) {
-        headerIdx = i;
-        row.forEach((h, idx) => {
-          if (h.includes('udyog') || h.includes('udyam')) colMap.udyam = idx;
-          // 'district_name' also contains 'name' — only use 'name' if 'district' is NOT in the header
-          if (h.includes('enterprise') || (h.includes('name') && !h.includes('district'))) colMap.name = idx;
-          if (h.includes('address')) colMap.address = idx;
-          if (h.includes('district_name') || h === 'district_name' || h === 'district') colMap.district = idx;
-          if (h.includes('activity')) colMap.activity = idx;
-          if (h.includes('latitude')) colMap.lat = idx;
-          if (h.includes('longitude')) colMap.lng = idx;
+    for (const sheetName of wb.SheetNames) {
+      const ws   = wb.Sheets[sheetName];
+      const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+      // Detect column positions from the header row of this sheet
+      let headerIdx = 0;
+      let colMap = {};
+      for (let i = 0; i < Math.min(5, data.length); i++) {
+        const row = data[i].map(c => String(c).trim().toLowerCase());
+        if (row.includes('udyogaadharno') || row.includes('enterprisename') || row.includes('enterprise_name')) {
+          headerIdx = i;
+          row.forEach((h, idx) => {
+            if (h.includes('udyog') || h.includes('udyam'))                          colMap.udyam     = idx;
+            if (h.includes('enterprise') || (h.includes('name') && !h.includes('district'))) colMap.name = idx;
+            if (h.includes('address'))                                                colMap.address   = idx;
+            if (h.includes('district_name') || h === 'district_name' || h === 'district') colMap.district = idx;
+            if (h === 'block' || h.includes('block_name') || h.includes('block'))    colMap.block     = idx;
+            if (h.includes('activity'))                                               colMap.activity  = idx;
+            if (h.includes('latitude'))                                               colMap.lat       = idx;
+            if (h.includes('longitude'))                                              colMap.lng       = idx;
+          });
+          break;
+        }
+      }
+
+      // If no header detected, fall back: col 0=udyam, 1=name, 2=district, 3=address, 4=block
+      if (colMap.udyam == null) {
+        colMap = { udyam: 0, name: 1, district: 2, address: 3, block: 4 };
+        headerIdx = 0;
+      }
+
+      // Use sheet name as district fallback (e.g. sheet "DHALAI" → district "Dhalai")
+      const sheetDistrict = normalizeDistrict(sheetName);
+
+      const sheetRows = data.slice(headerIdx + 1).filter(r => r.some(c => c !== ''));
+      for (const row of sheetRows) {
+        if (!row || !Array.isArray(row)) continue;
+        const udyam = String(row[colMap.udyam] ?? '').trim();
+        const name  = String(row[colMap.name]  ?? '').trim();
+        if (!udyam || !name) continue; // skip blank rows early
+        allRecords.push({
+          udyam,
+          name,
+          address:  String(row[colMap.address]  ?? '').replace(/\r?\n/g, ' ').trim(),
+          distRaw:  String(row[colMap.district] ?? '').trim() || sheetName,
+          activity: String(row[colMap.activity] ?? ''),
+          lat:      colMap.lat != null ? parseFloat(row[colMap.lat])  || null : null,
+          lng:      colMap.lng != null ? parseFloat(row[colMap.lng])  || null : null,
+          blockFromExcel: colMap.block != null ? String(row[colMap.block] ?? '').trim() : null,
+          sheetDistrict,
         });
-        break;
       }
     }
-
-    const records = data.slice(headerIdx + 1).filter(r => r.some(c => c !== ''));
 
     let inserted = 0, updated = 0, skipped = 0, errors = [];
 
     const BATCH = 500;
-    for (let i = 0; i < records.length; i += BATCH) {
-      const batch = records.slice(i, i + BATCH);
+    for (let i = 0; i < allRecords.length; i += BATCH) {
+      const batch = allRecords.slice(i, i + BATCH);
       const ops = [];
 
-      for (const row of batch) {
-        const udyam    = String(row[colMap.udyam] || '').trim();
-        const name     = String(row[colMap.name]  || '').trim();
-        const address  = String(row[colMap.address] || '').replace(/\r?\n/g, ' ').trim();
-        const distRaw  = String(row[colMap.district] || '').trim();
-        const activity = String(row[colMap.activity] || '');
-
+      for (const { udyam, name, address, distRaw, activity, lat, lng, blockFromExcel, sheetDistrict } of batch) {
         if (!udyam || !name) { skipped++; continue; }
         if (!/^UDYAM-/i.test(udyam)) { skipped++; continue; }
 
-        const block    = extractBlock(address) || distRaw;
-        const district = normalizeDistrict(distRaw);
-        const sector   = nicToSector(activity);
+        const safeAddress  = String(address  || '');
+        const safeDistRaw  = String(distRaw  || '');
+        const safeActivity = String(activity || '');
 
-        const lat  = colMap.lat  != null ? parseFloat(row[colMap.lat])  || null : null;
-        const lng  = colMap.lng  != null ? parseFloat(row[colMap.lng])  || null : null;
+        // PRIORITY LOGIC FOR BLOCK:
+        // 1. Use blockFromExcel if it's provided and not empty
+        // 2. Fall back to address extraction
+        // 3. Fall back to district name (last resort)
+        let block;
+        if (blockFromExcel) {
+          // Try to match against known blocks
+          const lowerBlock = blockFromExcel.toLowerCase();
+          const matchedBlock = ALL_BLOCKS.find(b => b.block.toLowerCase() === lowerBlock);
+          block = matchedBlock ? matchedBlock.block : blockFromExcel;
+        } else {
+          // Extract from address if no BLOCK column
+          block = extractBlock(safeAddress) || normalizeDistrict(safeDistRaw) || sheetDistrict;
+        }
+
+        const district = normalizeDistrict(safeDistRaw) || sheetDistrict;
+        const sector   = nicToSector(safeActivity);
 
         ops.push({
           updateOne: {
@@ -358,7 +436,7 @@ router.post('/bulk-upload', authenticate, authorize('admin', 'super_admin'), upl
       inserted,
       updated,
       skipped,
-      total: records.length,
+      total: allRecords.length,
     });
   } catch (err) {
     console.error('[POST /msme/bulk-upload]', err);
