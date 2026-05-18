@@ -350,15 +350,13 @@ router.post('/forgot-password', forgotLimiter, [
 ], validate, async (req, res) => {
   try {
     const { email } = req.body;
-    const user = await User.findOne({ email, is_active: 1 }).lean();
+    const user = await User.findOne({ email, is_active: { $ne: 0 } }).lean();
 
     // Always same response — prevents email enumeration
     const OK = { success: true, message: 'If that email is registered you will receive a password reset email shortly.' };
 
     if (!user) return res.json(OK);
 
-    // Always use custom token flow with SMTP (branded email from noreply.brpams@gmail.com)
-    // SMTP → Resend → Firebase fallback is handled inside sendMail()
     const rawToken  = generateToken();
     const hashedTok = hashToken(rawToken);
     const expires   = new Date(Date.now() + 30 * 60 * 1000); // 30 min
@@ -367,7 +365,7 @@ router.post('/forgot-password', forgotLimiter, [
       $set: { pwd_reset_token: hashedTok, pwd_reset_expires: expires }
     });
 
-    const FRONTEND = process.env.FRONTEND_URL || 'https://ams-frontend-web-q2lw.onrender.com';
+    const FRONTEND = process.env.FRONTEND_URL || 'https://monitermark.brptripura.com';
     const resetUrl = `${FRONTEND}/reset-password?token=${rawToken}`;
     await sendMail(user.email, '[BRP AMS] Reset Your Password',
       emailLayout('Password Reset Request', `
