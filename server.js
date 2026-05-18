@@ -20,7 +20,7 @@ const mongoSanitize = require('express-mongo-sanitize');
 const cron          = require('node-cron');
 
 const app  = express();
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 10000;
 
 app.set('trust proxy', 1);
 
@@ -50,7 +50,7 @@ app.use(helmet({
 
 const ALLOWED_ORIGINS = [
   process.env.FRONTEND_URL || 'http://localhost:3000',
-  process.env.BACKEND_URL  || 'https://ams-backend-1-yvgm.onrender.com',
+  process.env.BACKEND_URL  || 'https://mm-services.brptripura.com',
   'http://localhost:3000',
   'http://localhost:3001',
   'capacitor://localhost',
