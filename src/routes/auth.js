@@ -15,17 +15,18 @@ const generateToken = () => crypto.randomBytes(32).toString('hex');           //
 const hashToken     = (t) => crypto.createHash('sha256').update(t).digest('hex');
 const generateOTP   = () => Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit
 
-// ── Rate limiters ─────────────────────────────────────────────────────────
+// ── Rate limiters (relaxed in dev, strict in production) ──────────────────
+const isDev = process.env.NODE_ENV !== 'production';
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false,
+  windowMs: 15 * 60 * 1000, max: isDev ? 100 : 10, standardHeaders: true, legacyHeaders: false,
   message: { success: false, message: 'Too many login attempts. Try again in 15 minutes.' },
 });
 const forgotLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false,
+  windowMs: 60 * 60 * 1000, max: isDev ? 50 : 5, standardHeaders: true, legacyHeaders: false,
   message: { success: false, message: 'Too many password reset requests. Try again in 1 hour.' },
 });
 const otpLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false,
+  windowMs: 10 * 60 * 1000, max: isDev ? 50 : 5, standardHeaders: true, legacyHeaders: false,
   message: { success: false, message: 'Too many OTP requests. Try again in 10 minutes.' },
 });
 
