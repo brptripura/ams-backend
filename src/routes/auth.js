@@ -153,7 +153,7 @@ if (existingSuperAdmin) {
 });
 // ── POST /api/auth/login ──────────────────────────────────────────────────
 router.post('/login', loginLimiter, [
-  body('email').isEmail().normalizeEmail(),
+  body('email').isEmail().normalizeEmail({ gmail_remove_dots: false, all_lowercase: true }),
   body('password').notEmpty(),
 ], validate, async (req, res) => {
   try {
@@ -346,7 +346,7 @@ router.put('/change-password', authenticate, [
 // Uses Firebase to send password reset email (works on Render via HTTPS)
 // Falls back to custom token flow if Firebase is not configured
 router.post('/forgot-password', forgotLimiter, [
-  body('email').isEmail().normalizeEmail().withMessage('Valid email required'),
+  body('email').isEmail().normalizeEmail({ gmail_remove_dots: false, all_lowercase: true }).withMessage('Valid email required'),
 ], validate, async (req, res) => {
   try {
     const { email } = req.body;
