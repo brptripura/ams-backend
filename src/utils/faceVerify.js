@@ -6,7 +6,8 @@ const { createCanvas, loadImage } = require('@napi-rs/canvas');
 const faceapi = require('@vladmandic/face-api/dist/face-api.node-wasm.js');
 
 const MODELS_PATH        = path.join(__dirname, '../../public/models');
-const MATCH_THRESHOLD    = 0.45;   // Euclidean distance — lower = stricter
+const CONFIDENCE_THRESHOLD = 70;   // Match if confidence >= 70%
+const MATCH_THRESHOLD    = 0.30;   // Euclidean distance equiv of 70% confidence
 const BLOCK_CONFIDENCE_MIN = 0;    // Block ALL mismatches
 const MIN_FACE_CONF      = 0.3;
 
@@ -339,11 +340,11 @@ async function verifyFace(selfieBuffer, profilePhotoUrl, mimeType = 'image/jpeg'
   // ── Compare descriptors ───────────────────────────────────────────────
   const distance   = faceapi.euclideanDistance(profileDescriptor, selfieDescriptor);
   const confidence = Math.round(Math.max(0, Math.min(100, (1 - distance) * 100)));
-  const match      = distance <= MATCH_THRESHOLD;
+  const match      = confidence >= CONFIDENCE_THRESHOLD; // 70% and above = match
 
   console.log(
     `[FaceVerify] distance=${distance.toFixed(4)} | ` +
-    `confidence=${confidence}% | match=${match} | threshold=${MATCH_THRESHOLD}`
+    `confidence=${confidence}% | match=${match} | required=${CONFIDENCE_THRESHOLD}%`
   );
 
   if (match) {
@@ -356,19 +357,19 @@ async function verifyFace(selfieBuffer, profilePhotoUrl, mimeType = 'image/jpeg'
 
   // ── Mismatch reason ───────────────────────────────────────────────────
   let reason;
-  if (distance > 0.80) {
+  if (confidence < 30) {
     reason =
       'Face does not match your enrolled profile photo. ' +
       'Ensure you are the registered employee, or contact admin to re-enroll.';
-  } else if (distance > 0.60) {
+  } else if (confidence < 50) {
     reason =
       'Face did not match. Try in better lighting and remove glasses if wearing any.';
   } else {
     reason =
-      'Face match uncertain. Look straight at the camera with your face fully visible.';
+      `Face match ${confidence}% — below required 70%. Look straight at the camera with your face fully visible.`;
   }
 
   return { match: false, confidence, reason };
 }
 
-module.exports = { verifyFace, MATCH_THRESHOLD, BLOCK_CONFIDENCE_MIN };
+module.exports = { verifyFace, MATCH_THRESHOLD, CONFIDENCE_THRESHOLD, BLOCK_CONFIDENCE_MIN };
