@@ -64,7 +64,7 @@ async function runFaceCheck(selfieBuffer, enrolledPhotoUrl, mimetype, empName = 
     };
   }
 
-  return null; // null = pass, allow check-in/out
+  return { passed: true, confidence: faceResult.confidence }; // pass — include confidence for response
 }
 
 // ── Multer — scan documents ───────────────────────────────────────────────
@@ -289,6 +289,7 @@ router.post('/checkin', authenticate, authorize('employee'), upload.single('self
       .select('profile_photo_path facePhotoUrl face_enrolled name')
       .lean();
     const enrolledPhotoUrl = empUser?.facePhotoUrl || empUser?.profile_photo_path || null;
+    let faceConfidence = 0;
 
     console.log('[CheckIn] enrolledPhotoUrl:', enrolledPhotoUrl);
     console.log('[CheckIn] selfie uploaded:', !!req.file);
@@ -303,15 +304,16 @@ router.post('/checkin', authenticate, authorize('employee'), upload.single('self
 
     // ── Face verification ─────────────────────────────────────────────
     if (req.file) {
-      const faceError = await runFaceCheck(
+      const faceResult = await runFaceCheck(
         req.file.buffer,
         enrolledPhotoUrl,
         req.file.mimetype,
         empUser.name
       );
-      if (faceError) {
-        return res.status(400).json(faceError);
+      if (!faceResult?.passed) {
+        return res.status(400).json(faceResult);
       }
+      faceConfidence = faceResult.confidence;
     } else {
       // No selfie uploaded — block check-in (selfie is mandatory)
       return res.status(400).json({
@@ -362,7 +364,7 @@ router.post('/checkin', authenticate, authorize('employee'), upload.single('self
 
     await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'CHECKIN', entity_type: 'attendance', entity_id: id });
     const record = await AttendanceRecord.findById(id).lean();
-    res.status(201).json({ success: true, message: 'Check-in successful', data: formatRecord(record) });
+    res.status(201).json({ success: true, message: 'Check-in successful', faceConfidence, data: formatRecord(record) });
   } catch (err) { console.error(err); res.status(500).json({ success: false, message: 'Server error' }); }
 });
 
@@ -459,6 +461,7 @@ router.put('/:id/checkout', authenticate, authorize('employee'), upload.single('
     }
 
     // ── Face verification for checkout ────────────────────────────────
+    let checkoutFaceConfidence = 0;
     if (req.file) {
       const empUser = await User.findById(req.user.id)
         .select('profile_photo_path facePhotoUrl name')
@@ -466,15 +469,16 @@ router.put('/:id/checkout', authenticate, authorize('employee'), upload.single('
       const enrolledPhotoUrl = empUser?.facePhotoUrl || empUser?.profile_photo_path || null;
 
       if (enrolledPhotoUrl) {
-        const faceError = await runFaceCheck(
+        const faceResult = await runFaceCheck(
           req.file.buffer,
           enrolledPhotoUrl,
           req.file.mimetype,
           empUser.name
         );
-        if (faceError) {
-          return res.status(400).json(faceError);
+        if (!faceResult?.passed) {
+          return res.status(400).json(faceResult);
         }
+        checkoutFaceConfidence = faceResult.confidence;
       }
     }
     // ── End face verification ─────────────────────────────────────────
@@ -546,7 +550,8 @@ router.put('/:id/checkout', authenticate, authorize('employee'), upload.single('
           message: isAutoApproved
             ? `Attendance auto-approved! You worked ${workedHours.toFixed(1)} hours.`
             : 'Checked out and submitted for approval',
-          autoApproved: isAutoApproved,
+          autoApproved:          isAutoApproved,
+          faceConfidence:        checkoutFaceConfidence,
           data: formatRecord(updated),
         });
       } catch (err) { console.error(err); res.status(500).json({ success: false, message: 'Server error' }); }
