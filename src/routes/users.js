@@ -67,7 +67,7 @@ router.get('/managers', authenticate, authorize('manager', 'admin', 'hr', 'super
       .find({ role: 'manager', is_active: 1 })
       .select('emp_id name email department')
       .lean();
-    res.json({ success: true, data: managers });
+    res.json({ success: true, data: managers.map(m => ({ ...m, id: m._id })) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -202,7 +202,7 @@ router.get('/:id', authenticate, async (req, res) => {
 });
 
 // ── POST /api/users ───────────────────────────────────────────────────────
-router.post('/', authenticate, authorize('admin'), [
+router.post('/', authenticate, authorize('admin', 'super_admin'), [
   body('name').notEmpty().withMessage('Name is required'),
   body('email').isEmail().withMessage('Valid email is required').normalizeEmail({ gmail_remove_dots: false, gmail_remove_subaddress: false, all_lowercase: true }),
   body('empId').notEmpty().withMessage('Employee ID is required'),
@@ -310,7 +310,7 @@ router.post('/', authenticate, authorize('admin'), [
 });
 
 // ── PUT /api/users/:id/reset-password — must be before PUT /:id ──────────
-router.put('/:id/reset-password', authenticate, authorize('admin'), async (req, res) => {
+router.put('/:id/reset-password', authenticate, authorize('admin', 'super_admin'), async (req, res) => {
   try {
     const target = await User.findById(req.params.id).select('-password_hash -email_verify_token -pwd_reset_token -phone_otp -login_attempts -login_locked_until').lean();
     if (!target) return res.status(404).json({ success: false, message: 'User not found' });
