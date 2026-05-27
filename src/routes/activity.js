@@ -314,6 +314,7 @@ router.get('/report/excel', authenticate, authorize('admin', 'manager', 'employe
   try {
     const XLSX = require('xlsx');
     const { filter = 'monthly', startDate, endDate } = req.query;
+    let start, end;
     const matchFilter = {};
     if (filter !== 'all') {
       ({ start, end } = dateRangeFromFilter(filter, startDate, endDate));
@@ -321,16 +322,12 @@ router.get('/report/excel', authenticate, authorize('admin', 'manager', 'employe
     } else {
       start = 'All'; end = 'All';
     }
-    // In report/excel and report/pdf routes, replace:
-if (req.user.role === 'employee') {
-  matchFilter.user_id = req.user.id;
-} else if (req.user.role === 'manager') {
-  const teamMembersExcel = await User.find(
-    { manager_id: req.user.id, is_active: 1 }
-  ).distinct('_id');
-  matchFilter.user_id = { $in: teamMembersExcel };
-}
-    // hr / super_admin / admin: see all
+    if (req.user.role === 'employee') {
+      matchFilter.user_id = req.user.id;
+    } else if (req.user.role === 'manager') {
+      const teamMembers = await User.find({ manager_id: req.user.id, is_active: 1 }).distinct('_id');
+      matchFilter.user_id = { $in: teamMembers };
+    }
 
     const rows = await Activity.aggregate([
       { $match: matchFilter },
@@ -343,31 +340,86 @@ if (req.user.role === 'employee') {
       }},
       { $sort: { activity_date: -1 } },
     ]);
+
     const excelRows = rows.map(a => ({
-      'Date': a.activity_date, 'Emp ID': a.emp_id, 'Officer Name': a.user_name,
-      'MSME Name': a.msme_name, 'Udyam No': a.udyam_number, 'Sector': a.sector,
-      'Support Type': a.support_type, 'Block': a.block_name,
-      'Location': a.location_address, 'Remarks': a.remarks, 'Docs': a.doc_count,
+      'Date':                  a.activity_date        || '',
+      'Emp ID':                a.emp_id               || '',
+      'Officer Name':          a.user_name            || '',
+      'MSME Name':             a.msme_name            || '',
+      'Udyam No':              a.udyam_number         || '',
+      'Activity Type':         a.activity_type        || a.sector        || '',
+      'Sub Activity':          a.sub_activity         || a.support_type  || '',
+      'Block / ULB':           a.block_name           || '',
+      'District':              a.district             || '',
+      'MSME Address':          a.msme_address         || '',
+      'Resolution / Solution': a.resolved_solution    || '',
+      'End Results':           a.end_results          || '',
+      'Remarks':               a.remarks              || '',
+      'Attachments':           a.doc_count            || 0,
     }));
+
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(excelRows), 'Activities');
+
+    // ── Main sheet styling ──
+    const ws = XLSX.utils.json_to_sheet(excelRows);
+
+    // Set column widths
+    ws['!cols'] = [
+      { wch: 12 }, // Date
+      { wch: 10 }, // Emp ID
+      { wch: 20 }, // Officer Name
+      { wch: 28 }, // MSME Name
+      { wch: 22 }, // Udyam No
+      { wch: 22 }, // Activity Type
+      { wch: 25 }, // Sub Activity
+      { wch: 20 }, // Block / ULB
+      { wch: 16 }, // District
+      { wch: 30 }, // MSME Address
+      { wch: 35 }, // Resolution
+      { wch: 35 }, // End Results
+      { wch: 35 }, // Remarks
+      { wch: 12 }, // Attachments
+    ];
+
+    XLSX.utils.book_append_sheet(wb, ws, 'Activities');
+
+    // ── Block summary sheet ──
     const blockRows = await Activity.aggregate([
       { $match: matchFilter },
       { $group: {
-        _id: '$block_name', total: { $sum: 1 },
-        awareness:         { $sum: { $cond: [{ $eq: ['$support_type', 'Awareness']         }, 1, 0] } },
-        marketing_linkage: { $sum: { $cond: [{ $eq: ['$support_type', 'Marketing Linkage'] }, 1, 0] } },
-        loan_facilitation: { $sum: { $cond: [{ $eq: ['$support_type', 'Loan Facilitation'] }, 1, 0] } },
-        training_workshop: { $sum: { $cond: [{ $eq: ['$support_type', 'Training/Workshop'] }, 1, 0] } },
-        advisory_other:    { $sum: { $cond: [{ $eq: ['$support_type', 'Advisory/Other']    }, 1, 0] } },
+        _id:   '$block_name',
+        total: { $sum: 1 },
+        unique_msme: { $addToSet: '$msme_name' },
+        awareness:         { $sum: { $cond: [{ $eq: ['$activity_type', 'Awareness & Outreach']       }, 1, 0] } },
+        financial_support: { $sum: { $cond: [{ $eq: ['$activity_type', 'Financial Support']           }, 1, 0] } },
+        market_linkage:    { $sum: { $cond: [{ $eq: ['$activity_type', 'Market Linkage']              }, 1, 0] } },
+        capacity_building: { $sum: { $cond: [{ $eq: ['$activity_type', 'Capacity Building']           }, 1, 0] } },
+        documentation:     { $sum: { $cond: [{ $eq: ['$activity_type', 'Documentation & Registration']}, 1, 0] } },
+        advisory:          { $sum: { $cond: [{ $eq: ['$activity_type', 'Advisory & Consulting']       }, 1, 0] } },
       }},
-      { $project: { _id: 0, 'Block': '$_id', 'Total': '$total', 'Awareness': '$awareness',
-        'Marketing Linkage': '$marketing_linkage', 'Loan Facilitation': '$loan_facilitation',
-        'Training/Workshop': '$training_workshop', 'Advisory/Other': '$advisory_other' } },
-      { $sort: { Total: -1 } },
+      { $project: {
+        _id: 0,
+        'Block / ULB':            '$_id',
+        'Total Activities':       '$total',
+        'Unique MSMEs':           { $size: '$unique_msme' },
+        'Awareness & Outreach':   '$awareness',
+        'Financial Support':      '$financial_support',
+        'Market Linkage':         '$market_linkage',
+        'Capacity Building':      '$capacity_building',
+        'Documentation & Reg':    '$documentation',
+        'Advisory & Consulting':  '$advisory',
+      }},
+      { $sort: { 'Total Activities': -1 } },
     ]);
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(blockRows), 'Block Summary');
-    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const wsBlock = XLSX.utils.json_to_sheet(blockRows);
+    wsBlock['!cols'] = [
+      { wch: 24 }, { wch: 16 }, { wch: 14 },
+      { wch: 20 }, { wch: 18 }, { wch: 16 },
+      { wch: 18 }, { wch: 20 }, { wch: 22 },
+    ];
+    XLSX.utils.book_append_sheet(wb, wsBlock, 'Block Summary');
+
+    const buf      = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
     const filename = filter === 'all' ? 'activities_all.xlsx' : `activities_${start}_${end}.xlsx`;
     res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -377,7 +429,6 @@ if (req.user.role === 'employee') {
     if (!res.headersSent) res.status(500).json({ success: false, message: err.message });
   }
 });
-
 // ── GET /api/activity/report/pdf ──────────────────────────────────────
 router.get('/report/pdf', authenticate, authorize('admin', 'manager', 'employee', 'hr', 'super_admin'), [
   query('filter').optional().isIn(['weekly', 'biweekly', 'monthly', 'all']),
@@ -387,6 +438,7 @@ router.get('/report/pdf', authenticate, authorize('admin', 'manager', 'employee'
   try {
     const PDFDocument = require('pdfkit');
     const { filter = 'monthly', startDate, endDate } = req.query;
+    let start, end;
     const matchFilter = {};
     if (filter !== 'all') {
       ({ start, end } = dateRangeFromFilter(filter, startDate, endDate));
@@ -412,68 +464,143 @@ router.get('/report/pdf', authenticate, authorize('admin', 'manager', 'employee'
       { $sort: { activity_date: -1 } },
       { $limit: 500 },
     ]);
-    const generatedDate = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' });
-    const pdfFilename   = filter === 'all' ? 'activity_report_all.pdf' : `activity_report_${matchFilter.activity_date?.$gte}_${matchFilter.activity_date?.$lte}.pdf`;
 
-    const doc     = new PDFDocument({ margin: 0, size: 'A4', layout: 'landscape' });
+    const generatedDate = new Date().toLocaleDateString('en-IN', {
+      timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric',
+    });
+    const pdfFilename = filter === 'all'
+      ? 'activity_report_all.pdf'
+      : `activity_report_${start}_${end}.pdf`;
+
+    const doc = new PDFDocument({ margin: 0, size: 'A3', layout: 'landscape' });
     res.setHeader('Content-Disposition', `attachment; filename=${pdfFilename}`);
     res.setHeader('Content-Type', 'application/pdf');
     doc.pipe(res);
 
-    const PAGE_W = 841.89, PAGE_H = 595.28, MARGIN = 30;
-    const BLUE = '#1a6aa5', BLUE_H = '#155a8a', ROW_ALT = '#f0f6fb', WHITE = '#ffffff', BORDER = '#d0e4f0';
+  const PAGE_W = 1190.55, PAGE_H = 841.89, MARGIN = 28;
+    const BLUE   = '#1a6aa5', BLUE_H = '#155a8a', BLUE_ALT = '#e8f2fb';
+    const WHITE  = '#ffffff', BORDER = '#c8dff0', TEXT_DARK = '#0f1e3d', TEXT_MED = '#4a5568';
 
-    doc.rect(0, 0, PAGE_W, 72).fill(BLUE);
-    doc.fillColor(WHITE).fontSize(20).font('Helvetica-Bold').text('BRP — Activity Report', MARGIN, 14, { width: PAGE_W - MARGIN * 2, align: 'center' });
-    const subtitle = `Period: ${filter === 'all' ? 'All Time' : filter.charAt(0).toUpperCase() + filter.slice(1)}  ·  Generated: ${generatedDate}  ·  Total: ${rows.length}`;
-    doc.fontSize(10).font('Helvetica').text(subtitle, MARGIN, 42, { width: PAGE_W - MARGIN * 2, align: 'center' });
+    // ── Columns: match detail view order ──────────────────────────────
+    // Date | Emp ID | Officer | MSME Name | Udyam No | Activity Type | Sub Activity | Block | Resolution | End Results | Remarks
+    const cols  = [70, 55, 85, 120, 110, 100, 100, 85, 130, 130, 130];  // total ≈ 780 fits in PAGE_W - 2*MARGIN
+   const heads = ['Date', 'Emp ID', 'Officer', 'MSME Name', 'Udyam No', 'Activity Type', 'Sub Activity', 'Block / ULB', 'Resolution / Solution', 'End Results', 'Remarks'];
 
-    const cols   = [68, 52, 80, 110, 105, 80, 90, 75, 112];
-    const heads  = ['Date', 'Emp ID', 'Officer', 'MSME Name', 'Udyam No', 'Sector', 'Support Type', 'Block', 'Remarks'];
-    const ROW_H  = 22, HEAD_H = 26;
-    let y = 82;
+    // ── Helper: draw header row ──
+    const ROW_H = 22, HEAD_H = 28;
+    const tableW = cols.reduce((s, c) => s + c, 0);
 
-    const drawHead = (yPos) => {
+    const drawHeader = (yPos) => {
+      doc.rect(MARGIN, yPos, tableW, HEAD_H).fill(BLUE_H);
       let x = MARGIN;
-      doc.rect(MARGIN, yPos, PAGE_W - MARGIN * 2, HEAD_H).fill(BLUE_H);
-      doc.fillColor(WHITE).fontSize(8).font('Helvetica-Bold');
-      heads.forEach((h, i) => { doc.text(h, x + 4, yPos + 8, { width: cols[i] - 6 }); x += cols[i]; });
+      doc.fillColor(WHITE).fontSize(7).font('Helvetica-Bold');
+      heads.forEach((h, i) => {
+        doc.text(h, x + 3, yPos + 9, { width: cols[i] - 5, lineBreak: false });
+        x += cols[i];
+      });
     };
-    drawHead(y);
-    y += HEAD_H;
 
-    doc.font('Helvetica').fontSize(7.5);
-    rows.forEach((r, idx) => {
-      if (y + ROW_H > PAGE_H - 20) {
-        doc.addPage({ size: 'A4', layout: 'landscape', margin: 0 });
-        y = 20;
-        drawHead(y);
-        y += HEAD_H;
-        doc.font('Helvetica').fontSize(7.5);
-      }
-      doc.rect(MARGIN, y, PAGE_W - MARGIN * 2, ROW_H).fill(idx % 2 === 0 ? WHITE : ROW_ALT);
-      doc.moveTo(MARGIN, y + ROW_H).lineTo(PAGE_W - MARGIN, y + ROW_H).strokeColor(BORDER).lineWidth(0.4).stroke();
-
-      const vals = [r.activity_date || '', r.emp_code || '', r.officer || '', r.msme_name || '', r.udyam_number || '', r.sector || '', r.support_type || '', r.block_name || '', r.remarks || '—'];
-      let cx = MARGIN;
-      doc.fillColor('#1a2744');
-      vals.forEach((v, i) => { doc.text(String(v), cx + 4, y + 7, { width: cols[i] - 6, ellipsis: true, lineBreak: false }); cx += cols[i]; });
-
+    const drawBorders = (yPos, rowH) => {
+      // bottom border
+      doc.moveTo(MARGIN, yPos + rowH).lineTo(MARGIN + tableW, yPos + rowH)
+        .strokeColor(BORDER).lineWidth(0.3).stroke();
+      // vertical borders
       let vx = MARGIN;
-      cols.forEach((w, i) => {
-        if (i > 0) doc.moveTo(vx, y).lineTo(vx, y + ROW_H).strokeColor(BORDER).lineWidth(0.3).stroke();
+      cols.forEach((w) => {
+        doc.moveTo(vx, yPos).lineTo(vx, yPos + rowH)
+          .strokeColor(BORDER).lineWidth(0.25).stroke();
         vx += w;
       });
-      y += ROW_H;
+      doc.moveTo(vx, yPos).lineTo(vx, yPos + rowH).strokeColor(BORDER).lineWidth(0.25).stroke();
+    };
+
+    // ── Page 1 header banner ──
+    const drawPageBanner = (isFirst) => {
+      doc.rect(0, 0, PAGE_W, isFirst ? 68 : 0).fill(BLUE);
+      if (isFirst) {
+        doc.fillColor(WHITE).fontSize(18).font('Helvetica-Bold')
+          .text('BRP — MSME Activity Report', MARGIN, 12, { width: PAGE_W - MARGIN * 2, align: 'center' });
+        const sub = `Period: ${filter === 'all' ? 'All Time' : filter.charAt(0).toUpperCase() + filter.slice(1)}  ·  Generated: ${generatedDate}  ·  Total Records: ${rows.length}`;
+        doc.fontSize(9).font('Helvetica')
+          .text(sub, MARGIN, 40, { width: PAGE_W - MARGIN * 2, align: 'center' });
+      }
+    };
+
+    drawPageBanner(true);
+    let y = 78;
+    drawHeader(y);
+    y += HEAD_H;
+
+    doc.font('Helvetica').fontSize(7);
+
+    rows.forEach((r, idx) => {
+      // Measure row height (may need 2 lines for long text)
+      const longFields = [
+        r.msme_name        || '',
+        r.resolved_solution|| '',
+        r.end_results      || '',
+        r.remarks          || '',
+      ];
+      const needsExtraLine = longFields.some(f => f.length > 28);
+      const thisRowH = needsExtraLine ? ROW_H + 10 : ROW_H;
+
+      if (y + thisRowH > PAGE_H - 20) {
+        doc.addPage({ size: 'A4', layout: 'landscape', margin: 0 });
+        y = 20;
+        drawHeader(y);
+        y += HEAD_H;
+        doc.font('Helvetica').fontSize(7);
+      }
+
+      // Row background
+      doc.rect(MARGIN, y, tableW, thisRowH).fill(idx % 2 === 0 ? WHITE : BLUE_ALT);
+
+      // Cell text
+      const vals = [
+        r.activity_date         || '',
+        r.emp_code              || '',
+        r.officer               || '',
+        r.msme_name             || '',
+        r.udyam_number          || '',
+        r.activity_type || r.sector        || '',
+        r.sub_activity  || r.support_type  || '',
+        r.block_name            || '',
+        r.resolved_solution     || '',
+        r.end_results           || '',
+        r.remarks               || '—',
+      ];
+
+      let cx = MARGIN;
+      doc.fillColor(TEXT_DARK);
+      vals.forEach((v, i) => {
+        doc.text(String(v), cx + 3, y + 6, {
+          width:    cols[i] - 5,
+          height:   thisRowH - 6,
+          ellipsis: true,
+          lineBreak: thisRowH > ROW_H, // allow wrap only when extra height
+        });
+        cx += cols[i];
+      });
+
+      drawBorders(y, thisRowH);
+      y += thisRowH;
     });
 
-    const tableH = y - 82;
-    doc.rect(MARGIN, 82, PAGE_W - MARGIN * 2, tableH).strokeColor(BLUE).lineWidth(0.8).stroke();
+    // Outer border around entire table
+    doc.rect(MARGIN, 78 + HEAD_H - HEAD_H, tableW, y - 78)
+      .strokeColor(BLUE).lineWidth(0.8).stroke();
+
+    // Footer
+    doc.fillColor(TEXT_MED).fontSize(8).font('Helvetica')
+      .text(
+        `BRP Activity Management System  ·  ${generatedDate}  ·  Confidential`,
+        MARGIN, PAGE_H - 18, { width: PAGE_W - MARGIN * 2, align: 'center' },
+      );
+
     doc.end();
   } catch (err) {
     console.error('PDF ERROR:', err.message, err.stack);
     if (!res.headersSent) res.status(500).json({ success: false, message: err.message });
   }
 });
-
 module.exports = router;

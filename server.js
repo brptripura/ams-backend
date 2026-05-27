@@ -20,7 +20,7 @@ const mongoSanitize = require('express-mongo-sanitize');
 const cron          = require('node-cron');
 
 const app  = express();
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 10000;
 
 app.set('trust proxy', 1);
 
@@ -48,57 +48,21 @@ app.use(helmet({
   frameguard: { action: 'deny' },
 }));
 
-// Build the allowed-origins list from env + hardcoded known URLs.
-// All historical Render service URLs are included so old deployments still work.
-const ALLOWED_ORIGINS = new Set([
-  // Current URLs (always allowed)
-  'https://brp-mobile.onrender.com',
-  'https://ams-frontend-web.onrender.com',
-  'https://ams-frontend-web-niuz.onrender.com',
-  // Historical backend URLs (kept so any outstanding JWT/cookie sessions still work)
-  'https://ams-backend-3it1.onrender.com',
-  'https://ams-backend-1-yvgm.onrender.com',
-  // From env (takes effect after Render redeploy)
-  process.env.FRONTEND_URL,
-  process.env.BACKEND_URL,
-  // Local dev
+const ALLOWED_ORIGINS = [
+  process.env.FRONTEND_URL || 'http://localhost:3000',
+  process.env.BACKEND_URL  || 'https://mm-services.brptripura.com',
   'http://localhost:3000',
   'http://localhost:3001',
-  'http://localhost:4001',
-  'http://localhost:10000',
   'capacitor://localhost',
   'http://localhost',
   'https://localhost',
-].filter(Boolean));
-
+];
 app.use(cors({
   origin: (origin, cb) => {
-    // allow requests with no origin (mobile apps, curl, Postman)
-    if (!origin) return cb(null, true);
-
-    // allow any localhost / 127.0.0.1 (local dev)
-    if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
-      return cb(null, true);
-    }
-
-    // allow any *.onrender.com subdomain that belongs to this project
-    // (covers any future Render service URLs automatically)
-    if (origin.endsWith('.onrender.com')) {
-      return cb(null, true);
-    }
-
-    // allow explicitly listed origins
-    if (ALLOWED_ORIGINS.has(origin)) {
-      return cb(null, true);
-    }
-
-    console.warn('[CORS] Blocked origin:', origin);
-    return cb(new Error('Not allowed by CORS'));
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    cb(new Error('Not allowed by CORS'));
   },
   credentials: true,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-  exposedHeaders: ["Content-Disposition"],
 }));
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -113,7 +77,6 @@ app.use((req, res, next) => {
 app.use(morgan('dev'));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
-app.use("/uploads", express.static("uploads"));
 app.use((req, res, next) => {
   if (req.body) req.body = mongoSanitize.sanitize(req.body, { replaceWith: '_' });
   if (req.query && typeof req.query === 'object') {
@@ -133,37 +96,62 @@ app.use('/api/', limiter);
 const { connectionPromise, AttendanceRecord, User, Notification, RevokedToken } = require('./src/models/database');
 const { v4: uuidv4 } = require('uuid');
 
-cron.schedule('28 18 * * *', async () => {   // 18:28 UTC = 23:58 IST
-  console.log('[AutoCheckout] Nightly cron triggered');
+// ─────────────────────────────────────────────────────────────────────────────
+// CRON 1 — Midnight IST (00:05): Mark unchecked-out records as missed-checkout
+//
+// Finds any Draft attendance record from YESTERDAY or earlier that has a
+// check-in but NO check-out, and converts it to:
+//   status           = 'Pending'
+//   is_missed_checkout = true
+//
+// This places it in the manager's queue so they can approve/reject it.
+// The employee is BLOCKED from checking in again until the manager acts.
+// ─────────────────────────────────────────────────────────────────────────────
+cron.schedule('5 0 * * *', async () => {
+  console.log('[MissedCheckout Cron] Running at midnight IST...');
   try {
-    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-    const unchecked = await AttendanceRecord.find({ date: today, status: 'Draft', checkout_time: null }).lean();
-    console.log(`[AutoCheckout] ${unchecked.length} unchecked for ${today}`);
+    const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+    // Find all Draft records from BEFORE today that have check-in but no check-out
+    const unchecked = await AttendanceRecord.find({
+      date:          { $lt: todayIST },   // strictly before today
+      status:        'Draft',
+      checkin_time:  { $ne: null },
+      checkout_time: null,
+    }).lean();
+
+    console.log(`[MissedCheckout Cron] Found ${unchecked.length} unchecked-out record(s) to process.`);
 
     for (const record of unchecked) {
-      const checkinDT  = new Date(`${record.date}T${record.checkin_time}:00+05:30`);
-      const checkoutDT = new Date(`${record.date}T23:58:00+05:30`);
-      const workedHrs  = Math.round(((checkoutDT - checkinDT) / 3600000) * 100) / 100;
-
+      // Mark as missed-checkout and move to Pending for manager review
       await AttendanceRecord.findByIdAndUpdate(record._id, {
         $set: {
-          checkout_time:    '23:58',
-          status:           'Approved',
-          submitted_at:     new Date(),
-          is_auto_checkout: true,
-          checkout_remarks: 'Auto checkout — employee did not check out',
-          worked_hours:     workedHrs > 0 ? workedHrs : null,
-          leave_type:       workedHrs < 4 ? 'Half Day' : null,
-          leave_status:     workedHrs < 4 ? 'Pending'  : null,
+          status:             'Pending',
+          is_missed_checkout: true,
+          checkout_remarks:   'Employee did not check out. Requires manager approval.',
+          submitted_at:       new Date(),
         },
       });
+
+      // Notify the employee
+      await Notification.create({
+        _id:               uuidv4(),
+        user_id:           record.emp_id,
+        title:             '⚠️ Missed Check-Out',
+        message:           `You forgot to check out on ${record.date}. Your attendance has been sent to your manager for review. You cannot check in until they approve or reject it.`,
+        type:              'warning',
+        related_record_id: record._id,
+        link:              '/employee/history',
+      });
+
+      // Notify the manager
       if (record.manager_id) {
         const emp = await User.findById(record.emp_id).select('name').lean();
         await Notification.create({
           _id:               uuidv4(),
           user_id:           record.manager_id,
-          title:             '⚠️ Auto Checkout',
-          message:           `${emp?.name || 'Employee'} was auto-checked out at 23:58 on ${record.date}. Please review.`,
+          title:             '🔔 Missed Check-Out — Action Required',
+          message:           `${emp?.name || 'An employee'} did not check out on ${record.date} (checked in at ${record.checkin_time}). Please review and approve or reject.`,
           type:              'warning',
           related_record_id: record._id,
           link:              '/manager/queue',
@@ -246,7 +234,8 @@ cron.schedule('0 18-23 * * *', async () => {
         });
       }
     }
-    console.log('[AutoCheckout] Done');
+
+    console.log('[MissedCheckout Reminder] Done');
   } catch (err) {
     console.error('[MissedCheckout Reminder] Error:', err.message);
   }
@@ -268,55 +257,8 @@ connectionPromise.then(async () => {
   pruneRevokedTokens();
   setInterval(pruneRevokedTokens, 60 * 60 * 1000);
   require('./src/utils/mailer');
-
-  // Process any Draft records missed while server was down (Render sleep)
-  try {
-    const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-    const missed = await AttendanceRecord.find({
-      date:          { $lt: todayIST },
-      status:        'Draft',
-      checkout_time: null,
-      duty_type:     { $ne: 'Leave' },
-    }).lean();
-
-    if (missed.length > 0) {
-      console.log(`[Startup] Found ${missed.length} Draft records from previous days — auto-processing…`);
-      for (const record of missed) {
-        const checkinDT  = new Date(`${record.date}T${record.checkin_time}:00+05:30`);
-        const checkoutDT = new Date(`${record.date}T23:58:00+05:30`);
-        const workedHrs  = Math.max(0, Math.round(((checkoutDT - checkinDT) / 3600000) * 100) / 100);
-
-        await AttendanceRecord.findByIdAndUpdate(record._id, {
-          $set: {
-            checkout_time:    '23:58',
-            status:           'Approved',
-            submitted_at:     new Date(),
-            is_auto_checkout: true,
-            checkout_remarks: 'Auto checkout — server was offline during scheduled run',
-            worked_hours:     workedHrs > 0 ? workedHrs : null,
-            leave_type:       workedHrs < 4 ? 'Half Day' : null,
-            leave_status:     workedHrs < 4 ? 'Pending'  : null,
-          },
-        });
-
-        if (record.manager_id) {
-          const emp = await User.findById(record.emp_id).select('name').lean();
-          await Notification.create({
-            _id:               uuidv4(),
-            user_id:           record.manager_id,
-            title:             'Missed Auto Checkout',
-            message:           `${emp?.name || 'Employee'} was auto-checked out (server recovery) on ${record.date}.`,
-            type:              'warning',
-            related_record_id: record._id,
-          });
-        }
-      }
-      console.log(`[Startup] Auto-processed ${missed.length} missed Draft records`);
-    }
-  } catch (err) {
-    console.error('[Startup] Missed checkout recovery error:', err.message);
-  }
 });
+
 // ── Routes ────────────────────────────────────────────────────────────────
 const attendanceRouter = require('./src/routes/attendance');
 app.use('/api/auth',              require('./src/routes/auth'));
@@ -334,11 +276,46 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
-    version: '1.1.0',
-    aadhaarRoutes: true,   // confirms /auth/aadhaar/* routes are deployed
+    version: '1.2.0',
+    msmeUnfiltered: true,  // confirms MSME route no longer filters by block for employees
   });
 });
 
+
+// ── Temporary email debug endpoint ────────────────────────────────────────
+app.post('/api/admin/test-email', async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ success: false, message: 'email required' });
+  const results = {};
+
+  try {
+    const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY;
+    if (FIREBASE_API_KEY) {
+      const fbRes = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${FIREBASE_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestType: 'PASSWORD_RESET', email }),
+      });
+      const fbData = await fbRes.json();
+      results.firebase = { status: fbRes.status, ok: fbRes.ok, data: fbData };
+    } else {
+      results.firebase = { status: 'skipped', reason: 'no FIREBASE_API_KEY' };
+    }
+  } catch (err) {
+    results.firebase = { error: err.message };
+  }
+
+  try {
+    const { sendMail, mode } = require('./src/utils/mailer');
+    results.mailer_mode = mode;
+    await sendMail(email, '[BRP AMS] Email Test', '<h2>BRP-AMS Email Test</h2><p>This confirms email delivery is working. Time: ' + new Date().toISOString() + '</p>');
+    results.smtp = { status: 'sent' };
+  } catch (err) {
+    results.smtp = { error: err.message };
+  }
+
+  res.json({ success: true, results });
+});
 
 // ── Error Handler ─────────────────────────────────────────────────────────
 app.use((err, req, res, next) => {

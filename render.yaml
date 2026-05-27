@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: ams-backend
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: FRONTEND_URL
+        value: https://monitermark.brptripura.com
+      - key: BACKEND_URL
+        value: https://mm-services.brptripura.com
+      # Set these in Render Dashboard (sensitive — do not commit values):
+      # MONGO_URI, JWT_SECRET, JWT_EXPIRES_IN
+      # CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
+      # SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS, SMTP_FROM
