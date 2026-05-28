@@ -13,13 +13,6 @@ const MIN_FACE_CONF      = 0.3;
 let modelsLoaded     = false;
 let modelLoadPromise = null;
 let modelsFailedMsg  = null;
-
-// ── Transform Cloudinary URL to force JPEG + optimal face-detection size ──
-// This is the KEY fix: Cloudinary PNG uploads may have issues with
-// @napi-rs/canvas. Forcing f_jpg,q_90,w_640 ensures:
-//   1. JPEG format — no alpha channel issues
-//   2. 640px width — good size for SSD face detection
-//   3. Quality 90 — high enough detail for face recognition
 function toCloudinaryJpeg(url) {
   if (!url) return url;
 
@@ -180,9 +173,6 @@ ensureModels().catch(err =>
   console.error('[FaceVerify] Startup preload failed:', err.message)
 );
 
-// ── Get 128-d face descriptor from a Buffer ────────────────────────────────
-// CRITICAL FIX: bufferToTensor is called ONCE per confidence level attempt.
-// The tensor is always disposed in finally to prevent memory leaks.
 async function getDescriptor(buffer, label = '') {
   const tf = faceapi.tf;
 
