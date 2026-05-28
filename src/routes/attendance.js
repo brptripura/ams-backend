@@ -68,7 +68,17 @@ async function runFaceCheck(selfieBuffer, enrolledPhotoUrl, mimetype, empName = 
 }
 
 // ── Background face verification (runs after response is sent) ────────────
+// Semaphore: TensorFlow has global state — limit to 1 concurrent face verify
+// to prevent memory contention when multiple employees check in simultaneously.
+let _faceVerifyRunning = false;
+const _faceVerifyQueue = [];
+
 async function runBackgroundFaceVerify(recordId, selfieBuffer, enrolledPhotoUrl, mimetype, empName, empId) {
+  // Queue this job if another verification is already running
+  if (_faceVerifyRunning) {
+    await new Promise(resolve => _faceVerifyQueue.push(resolve));
+  }
+  _faceVerifyRunning = true;
   try {
     const faceResult = await runFaceCheck(selfieBuffer, enrolledPhotoUrl, mimetype, empName);
     if (faceResult?.passed) {
@@ -98,6 +108,9 @@ async function runBackgroundFaceVerify(recordId, selfieBuffer, enrolledPhotoUrl,
     await AttendanceRecord.findByIdAndUpdate(recordId, {
       $set: { face_verification_status: 'failed', face_confidence: 0 },
     }).catch(() => {});
+  } finally {
+    _faceVerifyRunning = false;
+    if (_faceVerifyQueue.length > 0) _faceVerifyQueue.shift()(); // release next in queue
   }
 }
 
@@ -388,20 +401,33 @@ router.post('/checkin', authenticate, authorize('employee'), upload.single('self
     const record = await AttendanceRecord.findById(id).lean();
 
     // ── Return immediately — face verification runs in background ─────────
-    res.status(201).json({
-      success:            true,
-      message:            'Check-in recorded! Verifying face in background…',
-      verificationPending: true,
-      data:               formatRecord(record),
-    });
-
-    // Trigger background face verification after response is sent
     const selfieBuffer    = req.file.buffer;
     const selfiesMimetype = req.file.mimetype;
-    setImmediate(() => {
-      runBackgroundFaceVerify(id, selfieBuffer, enrolledPhotoUrl, selfiesMimetype, empUser.name, req.user.id);
+    const empName         = empUser.name;
+    const empId           = req.user.id;
+
+    res.status(201).json({
+      success:             true,
+      message:             'Check-in recorded! Verifying face in background…',
+      verificationPending: true,
+      data:                formatRecord(record),
     });
-  } catch (err) { console.error(err); res.status(500).json({ success: false, message: 'Server error' }); }
+    // NOTE: response is already sent — no more res.* calls after this line.
+    // setImmediate runs outside the try/catch scope so headers-already-sent
+    // cannot happen even if the background job throws.
+    setImmediate(() => {
+      runBackgroundFaceVerify(id, selfieBuffer, enrolledPhotoUrl, selfiesMimetype, empName, empId);
+    });
+
+  } catch (err) {
+    // Only reached if an error occurs BEFORE res.status(201) was sent
+    if (!res.headersSent) {
+      console.error('[CheckIn] Error:', err.message || err);
+      res.status(500).json({ success: false, message: 'Server error' });
+    } else {
+      console.error('[CheckIn] Post-response error (non-fatal):', err.message || err);
+    }
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
