@@ -67,6 +67,40 @@ async function runFaceCheck(selfieBuffer, enrolledPhotoUrl, mimetype, empName = 
   return { passed: true, confidence: faceResult.confidence }; // pass — include confidence for response
 }
 
+// ── Background face verification (runs after response is sent) ────────────
+async function runBackgroundFaceVerify(recordId, selfieBuffer, enrolledPhotoUrl, mimetype, empName, empId) {
+  try {
+    const faceResult = await runFaceCheck(selfieBuffer, enrolledPhotoUrl, mimetype, empName);
+    if (faceResult?.passed) {
+      await AttendanceRecord.findByIdAndUpdate(recordId, {
+        $set: { face_verification_status: 'verified', face_confidence: faceResult.confidence },
+      });
+      await Notification.create({
+        _id: uuidv4(), user_id: empId,
+        title:   'Face Verified ✅',
+        message: `Check-in face verified (${faceResult.confidence}% match).`,
+        type:    'success', related_record_id: recordId,
+      });
+    } else {
+      await AttendanceRecord.findByIdAndUpdate(recordId, {
+        $set: { face_verification_status: 'failed', face_confidence: faceResult?.faceConfidence ?? 0 },
+      });
+      await Notification.create({
+        _id: uuidv4(), user_id: empId,
+        title:   'Face Verification Failed ⚠️',
+        message: faceResult?.message || 'Face could not be verified. Check-in is pending manager review.',
+        type:    'warning', related_record_id: recordId,
+      });
+    }
+    console.info(`[BGFaceVerify] record=${recordId} status=${faceResult?.passed ? 'verified' : 'failed'}`);
+  } catch (err) {
+    console.error('[BGFaceVerify] Error:', err.message);
+    await AttendanceRecord.findByIdAndUpdate(recordId, {
+      $set: { face_verification_status: 'failed', face_confidence: 0 },
+    }).catch(() => {});
+  }
+}
+
 // ── Multer — scan documents ───────────────────────────────────────────────
 const uploadScan = multer({
   storage: multer.memoryStorage(),
@@ -289,7 +323,6 @@ router.post('/checkin', authenticate, authorize('employee'), upload.single('self
       .select('profile_photo_path facePhotoUrl face_enrolled name')
       .lean();
     const enrolledPhotoUrl = empUser?.facePhotoUrl || empUser?.profile_photo_path || null;
-    let faceConfidence = 0;
 
     console.log('[CheckIn] enrolledPhotoUrl:', enrolledPhotoUrl);
     console.log('[CheckIn] selfie uploaded:', !!req.file);
@@ -302,27 +335,13 @@ router.post('/checkin', authenticate, authorize('employee'), upload.single('self
       });
     }
 
-    // ── Face verification ─────────────────────────────────────────────
-    if (req.file) {
-      const faceResult = await runFaceCheck(
-        req.file.buffer,
-        enrolledPhotoUrl,
-        req.file.mimetype,
-        empUser.name
-      );
-      if (!faceResult?.passed) {
-        return res.status(400).json(faceResult);
-      }
-      faceConfidence = faceResult.confidence;
-    } else {
-      // No selfie uploaded — block check-in (selfie is mandatory)
+    if (!req.file) {
       return res.status(400).json({
         success:         false,
         faceVerifyError: true,
         message:         'Selfie is required for check-in.',
       });
     }
-    // ── End face verification ─────────────────────────────────────────
 
     const { dutyType, sector, description, latitude, longitude, locationAddress, capturedAt, capturedDate } = req.body;
 
@@ -337,6 +356,7 @@ router.post('/checkin', authenticate, authorize('employee'), upload.single('self
     const checkinTime = (capturedAt && timeRe.test(capturedAt))     ? capturedAt   : istTimeStr();
     const checkinDate = (capturedDate && dateRe.test(capturedDate)) ? capturedDate : today;
 
+    // Upload selfie immediately
     const selfiePath = await uploadFile(req.file.buffer, 'ams/selfies', req.file.originalname, req.file.mimetype);
 
     let id = uuidv4();
@@ -353,6 +373,8 @@ router.post('/checkin', authenticate, authorize('employee'), upload.single('self
       hr_override: false, hr_remark: null, override_remark: null,
       overridden_by: null, hr_actioned_at: null,
       is_missed_checkout: false, checkout_remarks: null,
+      face_verification_status: 'pending',
+      face_confidence:          null,
     };
 
     if (existingRejectedLeaveId) {
@@ -364,7 +386,21 @@ router.post('/checkin', authenticate, authorize('employee'), upload.single('self
 
     await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'CHECKIN', entity_type: 'attendance', entity_id: id });
     const record = await AttendanceRecord.findById(id).lean();
-    res.status(201).json({ success: true, message: 'Check-in successful', faceConfidence, data: formatRecord(record) });
+
+    // ── Return immediately — face verification runs in background ─────────
+    res.status(201).json({
+      success:            true,
+      message:            'Check-in recorded! Verifying face in background…',
+      verificationPending: true,
+      data:               formatRecord(record),
+    });
+
+    // Trigger background face verification after response is sent
+    const selfieBuffer    = req.file.buffer;
+    const selfiesMimetype = req.file.mimetype;
+    setImmediate(() => {
+      runBackgroundFaceVerify(id, selfieBuffer, enrolledPhotoUrl, selfiesMimetype, empUser.name, req.user.id);
+    });
   } catch (err) { console.error(err); res.status(500).json({ success: false, message: 'Server error' }); }
 });
 
@@ -1004,6 +1040,8 @@ function formatRecord(r) {
     overriddenBy:             r.overridden_by || null,
     hrActionedBy:             r.hr_actioned_by || null,
     hrActionedAt:             r.hr_actioned_at || null,
+    faceVerificationStatus:   r.face_verification_status || null,
+    faceConfidence:           r.face_confidence ?? null,
   };
 }
 
