@@ -145,7 +145,11 @@ async function ensureModels() {
 
   modelLoadPromise = (async () => {
     const tf = faceapi.tf;
-    for (const backend of ['tensorflow', 'cpu']) {
+    const backends = process.env.NODE_ENV === 'production' 
+  ? ['cpu']                        // Render has no native TF
+  : ['tensorflow', 'cpu'];
+
+for (const backend of backends) {
       try {
         await tf.setBackend(backend);
         await tf.ready();
@@ -184,8 +188,8 @@ async function getDescriptor(buffer, label = '') {
 
   // Confidence levels to try — from normal down to very lenient.
   // Real-world profile photos (office lighting, slight angle) often score 0.2–0.35.
-  const confidenceLevels = [0.3, 0.2, 0.15, 0.10];
-
+  // const confidenceLevels = [0.3, 0.2, 0.15, 0.10];
+const confidenceLevels = [0.3, 0.15];
   for (const minConf of confidenceLevels) {
     let tensor = null;
     try {
