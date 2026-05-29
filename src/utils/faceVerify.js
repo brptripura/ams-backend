@@ -6,7 +6,8 @@ const { createCanvas, loadImage } = require('@napi-rs/canvas');
 const faceapi = require('@vladmandic/face-api/dist/face-api.node-wasm.js');
 
 const MODELS_PATH        = path.join(__dirname, '../../public/models');
-const CONFIDENCE_THRESHOLD = 70;   // Match if confidence >= 70%
+const CONFIDENCE_THRESHOLD = 70;   // Match if confidence >= 70% (first attempt)
+const RETAKE_THRESHOLD     = 40;   // Match if confidence >= 40% (retake attempt)
 const MATCH_THRESHOLD    = 0.30;   // Euclidean distance equiv of 70% confidence
 const BLOCK_CONFIDENCE_MIN = 0;    // Block ALL mismatches
 const MIN_FACE_CONF      = 0.3;
@@ -226,7 +227,7 @@ async function getDescriptor(buffer, label = '') {
 }
 
 // ── Main export ────────────────────────────────────────────────────────────
-async function verifyFace(selfieBuffer, profilePhotoUrl, mimeType = 'image/jpeg') {
+async function verifyFace(selfieBuffer, profilePhotoUrl, mimeType = 'image/jpeg', threshold = CONFIDENCE_THRESHOLD) {
 
   // ── Guard: no enrolled photo ──────────────────────────────────────────
   if (!profilePhotoUrl) {
@@ -340,11 +341,11 @@ async function verifyFace(selfieBuffer, profilePhotoUrl, mimeType = 'image/jpeg'
   // ── Compare descriptors ───────────────────────────────────────────────
   const distance   = faceapi.euclideanDistance(profileDescriptor, selfieDescriptor);
   const confidence = Math.round(Math.max(0, Math.min(100, (1 - distance) * 100)));
-  const match      = confidence >= CONFIDENCE_THRESHOLD; // 70% and above = match
+  const match      = confidence >= threshold;
 
   console.log(
     `[FaceVerify] distance=${distance.toFixed(4)} | ` +
-    `confidence=${confidence}% | match=${match} | required=${CONFIDENCE_THRESHOLD}%`
+    `confidence=${confidence}% | match=${match} | required=${threshold}%`
   );
 
   if (match) {
@@ -358,18 +359,14 @@ async function verifyFace(selfieBuffer, profilePhotoUrl, mimeType = 'image/jpeg'
   // ── Mismatch reason ───────────────────────────────────────────────────
   let reason;
   if (confidence < 30) {
-    reason =
-      'Face does not match your enrolled profile photo. ' +
-      'Ensure you are the registered employee, or contact admin to re-enroll.';
-  } else if (confidence < 50) {
-    reason =
-      'Face did not match. Try in better lighting and remove glasses if wearing any.';
+    reason = 'Face does not match your enrolled profile photo. Ensure you are the registered employee, or contact admin to re-enroll.';
+  } else if (confidence < threshold) {
+    reason = `Face match ${confidence}% — below required ${threshold}%. Try in better lighting, face the camera directly, and remove glasses.`;
   } else {
-    reason =
-      `Face match ${confidence}% — below required 70%. Look straight at the camera with your face fully visible.`;
+    reason = `Face match ${confidence}% — below required ${threshold}%. Look straight at the camera with your face fully visible.`;
   }
 
   return { match: false, confidence, reason };
 }
 
-module.exports = { verifyFace, MATCH_THRESHOLD, CONFIDENCE_THRESHOLD, BLOCK_CONFIDENCE_MIN };
+module.exports = { verifyFace, MATCH_THRESHOLD, CONFIDENCE_THRESHOLD, RETAKE_THRESHOLD, BLOCK_CONFIDENCE_MIN };

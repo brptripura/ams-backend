@@ -8,7 +8,7 @@ const { AttendanceRecord, User, Notification, AuditLog } = require('../models/da
 const { authenticate, authorize }                         = require('../middleware/auth');
 const { sendMail }                                        = require('../utils/mailer');
 const path = require('path');
-const { verifyFace, BLOCK_CONFIDENCE_MIN: FACE_MATCH_THRESHOLD } = require('../utils/faceVerify');
+const { verifyFace, BLOCK_CONFIDENCE_MIN: FACE_MATCH_THRESHOLD, RETAKE_THRESHOLD } = require('../utils/faceVerify');
 
 // ── IST helpers ───────────────────────────────────────────────────────────
 const istDateStr    = () => new Date().toLocaleDateString('en-CA',  { timeZone: 'Asia/Kolkata' });
@@ -33,10 +33,10 @@ const upload = multer({
 
 // ── Shared face-verify helper — used by both checkin and checkout ─────────
 // Returns null on pass, or a response-ready error object on block.
-async function runFaceCheck(selfieBuffer, enrolledPhotoUrl, mimetype, empName = '') {
+async function runFaceCheck(selfieBuffer, enrolledPhotoUrl, mimetype, empName = '', threshold = undefined) {
   let faceResult = null;
   try {
-    faceResult = await verifyFace(selfieBuffer, enrolledPhotoUrl, mimetype);
+    faceResult = await verifyFace(selfieBuffer, enrolledPhotoUrl, mimetype, threshold);
     console.info(
       `[FaceVerify] ${empName} | match=${faceResult.match} | ` +
       `confidence=${faceResult.confidence}% | ${faceResult.reason}`
@@ -457,6 +457,75 @@ router.delete('/:id/cancel-checkin', authenticate, authorize('employee', 'super_
   } catch (err) {
     console.error('[CancelCheckin] Error:', err);
     res.status(500).json({ success: false, message: err.message || 'Server error' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUT /api/attendance/:id/retake-face
+// Employee retakes selfie after a failed face verification.
+// Uses a lower threshold (40%) — gives benefit of doubt on second attempt.
+// ─────────────────────────────────────────────────────────────────────────────
+router.put('/:id/retake-face', authenticate, authorize('employee'), upload.single('selfie'), async (req, res) => {
+  try {
+    const record = await AttendanceRecord.findOne({ _id: req.params.id, emp_id: req.user.id }).lean();
+    if (!record) return res.status(404).json({ success: false, message: 'Record not found' });
+    if (record.face_verification_status !== 'failed')
+      return res.status(400).json({ success: false, message: 'Retake is only available when face verification has failed.' });
+    if (!req.file)
+      return res.status(400).json({ success: false, message: 'Selfie is required for retake.' });
+
+    const empUser = await User.findById(req.user.id)
+      .select('profile_photo_path facePhotoUrl name')
+      .lean();
+    const enrolledPhotoUrl = empUser?.facePhotoUrl || empUser?.profile_photo_path || null;
+
+    if (!enrolledPhotoUrl)
+      return res.status(403).json({ success: false, message: 'No profile photo enrolled. Go to My Profile to upload your photo.' });
+
+    // Run face check with the lower retake threshold (40%)
+    const faceResult = await runFaceCheck(
+      req.file.buffer, enrolledPhotoUrl, req.file.mimetype, empUser.name, RETAKE_THRESHOLD
+    );
+
+    if (faceResult?.passed) {
+      // Upload the new selfie and mark as verified
+      const newSelfiePath = await uploadFile(req.file.buffer, 'ams/selfies', req.file.originalname, req.file.mimetype);
+      await AttendanceRecord.findByIdAndUpdate(req.params.id, {
+        $set: {
+          face_verification_status: 'verified',
+          face_confidence:          faceResult.confidence,
+          selfie_path:              newSelfiePath,
+        },
+      });
+      await Notification.create({
+        _id: uuidv4(), user_id: req.user.id,
+        title:   'Face Verified on Retake ✅',
+        message: `Retake accepted — ${faceResult.confidence}% match (threshold: ${RETAKE_THRESHOLD}%).`,
+        type:    'success', related_record_id: req.params.id,
+      });
+    } else {
+      // Still failed — update confidence so employee knows how close they are
+      await AttendanceRecord.findByIdAndUpdate(req.params.id, {
+        $set: { face_confidence: faceResult?.faceConfidence ?? 0 },
+      });
+      await Notification.create({
+        _id: uuidv4(), user_id: req.user.id,
+        title:   'Face Still Not Matching ⚠️',
+        message: faceResult?.message || `Match too low (${faceResult?.faceConfidence ?? 0}%). Check-in pending manager review.`,
+        type:    'warning', related_record_id: req.params.id,
+      });
+    }
+
+    const updated = await AttendanceRecord.findById(req.params.id).lean();
+    res.json({
+      success:  true,
+      verified: !!faceResult?.passed,
+      message:  faceResult?.passed ? 'Face verified on retake!' : 'Face still not matching. Check-in pending manager review.',
+      data:     formatRecord(updated),
+    });
+  } catch (err) {
+    console.error('[RetakeFace] Error:', err.message || err);
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
