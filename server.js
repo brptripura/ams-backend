@@ -270,7 +270,8 @@ app.use('/api/activity',          require('./src/routes/activity'));
 app.use('/api/activity-schedule', require('./src/routes/activity-schedule'));
 app.use('/api/msme',              require('./src/routes/msme'));
 app.use('/api/custom-options',    require('./src/routes/custom-options'));
-
+const monthlyReportRoutes = require('./src/routes/monthlyReport');
+app.use('/api/monthly-report', monthlyReportRoutes);
 // Health check — version bump triggers Render redeploy detection
 app.get('/api/health', (req, res) => {
   res.json({

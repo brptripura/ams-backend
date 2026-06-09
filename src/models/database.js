@@ -275,6 +275,22 @@ const scheduleDocumentSchema = new mongoose.Schema({
 
 scheduleDocumentSchema.index({ schedule_id: 1 });
 
+const monthlyReportSchema = new mongoose.Schema({
+  user_id:     { type: String, ref: 'User', required: true },
+  month_key:   { type: String, required: true },      // "2026-06"
+  file_name:   { type: String, required: true },
+  file_type:   { type: String, default: null },
+  file_url:    { type: String, required: true },      // Cloudinary URL
+  public_id:   { type: String, default: null },       // for Cloudinary deletion
+  uploaded_at: { type: Date, default: Date.now },
+  expires_at:  { type: Date, required: true },        // TTL auto-delete
+}, { timestamps: { createdAt: 'created_at', updatedAt: false } });
+
+monthlyReportSchema.index({ user_id: 1, month_key: 1 }, { unique: true });
+monthlyReportSchema.index({ expires_at: 1 }, { expireAfterSeconds: 0 }); // auto-deletes after 3 months
+
+
+
 // ── Models ────────────────────────────────────────────────────────────────
 
 const User             = mongoose.model('User',             userSchema);
@@ -287,6 +303,7 @@ const ActivityDocument = mongoose.model('ActivityDocument', activityDocumentSche
 const ActivitySchedule = mongoose.model('ActivitySchedule', activityScheduleSchema);
 const ScheduleDocument = mongoose.model('ScheduleDocument', scheduleDocumentSchema);
 const MsmeMaster       = mongoose.model('MsmeMaster',       msmeMasterSchema);
+const MonthlyReport = mongoose.model('MonthlyReport', monthlyReportSchema);
 // ── Custom Dropdown Options (shared across all users) ─────────────────────
 const customOptionSchema = new mongoose.Schema({
   _id:      { type: String },
@@ -321,10 +338,10 @@ module.exports = {
   Activity,
   ActivityDocument,
    MsmeMaster,
-
   CustomOption,
   connectionPromise,
   ActivitySchedule,
   ScheduleDocument,
   connectionPromise,
+  MonthlyReport
 };
