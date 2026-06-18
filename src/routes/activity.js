@@ -5,6 +5,7 @@ const path    = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { uploadFile } = require('../utils/storage');
 const { query, body, validationResult } = require('express-validator');
+const ExcelJS = require('exceljs');
 const { Activity, ActivityDocument, User } = require('../models/database');
 const { authenticate, authorize } = require('../middleware/auth');
 
@@ -312,7 +313,6 @@ router.get('/report/excel', authenticate, authorize('admin', 'manager', 'employe
   query('endDate').optional().isISO8601(),
 ], validate, async (req, res) => {
   try {
-    const XLSX = require('xlsx');
     const { filter = 'monthly', startDate, endDate } = req.query;
     let start, end;
     const matchFilter = {};
@@ -358,30 +358,17 @@ router.get('/report/excel', authenticate, authorize('admin', 'manager', 'employe
       'Attachments':           a.doc_count            || 0,
     }));
 
-    const wb = XLSX.utils.book_new();
+    const wb = new ExcelJS.Workbook();
 
-    // ── Main sheet styling ──
-    const ws = XLSX.utils.json_to_sheet(excelRows);
-
-    // Set column widths
-    ws['!cols'] = [
-      { wch: 12 }, // Date
-      { wch: 10 }, // Emp ID
-      { wch: 20 }, // Officer Name
-      { wch: 28 }, // MSME Name
-      { wch: 22 }, // Udyam No
-      { wch: 22 }, // Activity Type
-      { wch: 25 }, // Sub Activity
-      { wch: 20 }, // Block / ULB
-      { wch: 16 }, // District
-      { wch: 30 }, // MSME Address
-      { wch: 35 }, // Resolution
-      { wch: 35 }, // End Results
-      { wch: 35 }, // Remarks
-      { wch: 12 }, // Attachments
-    ];
-
-    XLSX.utils.book_append_sheet(wb, ws, 'Activities');
+    // ── Main sheet ──
+    const ws = wb.addWorksheet('Activities');
+    const mainWidths = [12,10,20,28,22,22,25,20,16,30,35,35,35,12];
+    if (excelRows.length > 0) {
+      const headers = Object.keys(excelRows[0]);
+      ws.addRow(headers);
+      excelRows.forEach(r => ws.addRow(headers.map(h => r[h])));
+      headers.forEach((_, i) => { ws.getColumn(i + 1).width = mainWidths[i] || 15; });
+    }
 
     // ── Block summary sheet ──
     const blockRows = await Activity.aggregate([
@@ -411,15 +398,16 @@ router.get('/report/excel', authenticate, authorize('admin', 'manager', 'employe
       }},
       { $sort: { 'Total Activities': -1 } },
     ]);
-    const wsBlock = XLSX.utils.json_to_sheet(blockRows);
-    wsBlock['!cols'] = [
-      { wch: 24 }, { wch: 16 }, { wch: 14 },
-      { wch: 20 }, { wch: 18 }, { wch: 16 },
-      { wch: 18 }, { wch: 20 }, { wch: 22 },
-    ];
-    XLSX.utils.book_append_sheet(wb, wsBlock, 'Block Summary');
+    const wsBlock = wb.addWorksheet('Block Summary');
+    const blockWidths = [24,16,14,20,18,16,18,20,22];
+    if (blockRows.length > 0) {
+      const bHeaders = Object.keys(blockRows[0]);
+      wsBlock.addRow(bHeaders);
+      blockRows.forEach(r => wsBlock.addRow(bHeaders.map(h => r[h])));
+      bHeaders.forEach((_, i) => { wsBlock.getColumn(i + 1).width = blockWidths[i] || 15; });
+    }
 
-    const buf      = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const buf = await wb.xlsx.writeBuffer();
     const filename = filter === 'all' ? 'activities_all.xlsx' : `activities_${start}_${end}.xlsx`;
     res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

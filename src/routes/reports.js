@@ -1083,8 +1083,12 @@ router.get('/dashboard-stats', authenticate, async (req,res)=>{
     const today=new Date().toISOString().split('T')[0];
     const thisMonth=today.substring(0,7);
     const empFilter={};
-    if(req.user.role==='employee')     empFilter.emp_id    =toObjId(req.user.id);
-    else if(req.user.role==='manager') empFilter.manager_id=toObjId(req.user.id);
+    if(req.user.role==='employee'){
+      empFilter.emp_id=toObjId(req.user.id);
+    } else if(req.user.role==='manager'){
+      const teamMembers=await User.find({manager_id:req.user.id}).select('_id').lean();
+      empFilter.emp_id={$in:teamMembers.map(m=>m._id)};
+    }
     const monthStart=`${thisMonth}-01`;
     const [year,month]=thisMonth.split('-').map(Number);
     const nextMonth=month===12?`${year+1}-01-01`:`${year}-${String(month+1).padStart(2,'0')}-01`;

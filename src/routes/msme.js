@@ -301,10 +301,9 @@ router.post('/bulk-upload', authenticate, authorize('admin', 'super_admin'), upl
   if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
 
   try {
-    const XLSX = require('xlsx');
+    const ExcelJS = require('exceljs');
     const html = req.file.buffer.toString('latin1');
 
-    let rows;
     // Detect if it's the HTML frameset (not actual data) vs a proper XLS/XLSX
     if (html.includes('frameset') || html.includes('shLink')) {
       return res.status(400).json({
@@ -314,22 +313,19 @@ router.post('/bulk-upload', authenticate, authorize('admin', 'super_admin'), upl
       });
     }
 
-    let wb;
-    try {
-      wb = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true, raw: false });
-    } catch (e) {
-      // Try reading as HTML
-      wb = XLSX.read(html, { type: 'string' });
-    }
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(req.file.buffer);
 
     // ── Collect records from ALL sheets ──────────────────────────────────────
     // Your Excel has one sheet per district (DHALAI, GOMATI, KHOWAI, etc.)
     // We iterate every sheet so all ~53k records are imported, not just sheet 1.
     const allRecords = []; // { udyam, name, address, distRaw, activity, lat, lng, blockFromExcel }
 
-    for (const sheetName of wb.SheetNames) {
-      const ws   = wb.Sheets[sheetName];
-      const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    for (const ws of wb.worksheets) {
+      const data = [];
+      ws.eachRow(row => {
+        data.push(row.values.slice(1).map(v => (v instanceof Date ? v.toISOString().split('T')[0] : (v != null ? String(v).trim() : ''))));
+      });
 
       // Detect column positions from the header row of this sheet
       let headerIdx = 0;

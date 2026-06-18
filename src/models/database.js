@@ -104,7 +104,7 @@ const attendanceRecordSchema = new mongoose.Schema({
   hr_actioned_at:       { type: Date, default: null },
   overridden_by:        { type: String, enum: ['hr', 'super_admin', null], default: null },
   override_remark:      { type: String, default: null },
-  face_verification_status: { type: String, enum: ['pending', 'verified', 'failed', null], default: null },
+  face_verification_status: { type: String, enum: ['pending', 'retake_pending', 'verified', 'failed', 'manager_review', 'manager_approved', 'manager_rejected', null], default: null },
   face_confidence:          { type: Number, default: null },
   is_missed_checkout:       { type: Boolean, default: false },
 signed_reports: [{

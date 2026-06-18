@@ -2,7 +2,7 @@ const express  = require('express');
 const router   = express.Router();
 const multer   = require('multer');
 const path     = require('path');
-const XLSX     = require('xlsx');
+const ExcelJS  = require('exceljs');
 const PDFDocument = require('pdfkit');
 const { uploadFile } = require('../utils/storage');
 const { v4: uuidv4 } = require('uuid');
@@ -123,15 +123,16 @@ router.get('/export', authenticate, authorize('manager', 'admin', 'hr', 'super_a
       'Remarks':          s.remarks || '',
     }));
 
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Activity Reports');
-    ws['!cols'] = [
-      { wch: 25 }, { wch: 30 }, { wch: 12 }, { wch: 15 }, { wch: 20 },
-      { wch: 20 }, { wch: 15 }, { wch: 20 }, { wch: 20 }, { wch: 22 },
-      { wch: 20 }, { wch: 22 }, { wch: 35 }, { wch: 20 },
-    ];
-    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Activity Reports');
+    const widths = [25,30,12,15,20,20,15,20,20,22,20,22,35,20];
+    if (data.length > 0) {
+      const headers = Object.keys(data[0]);
+      ws.addRow(headers);
+      data.forEach(r => ws.addRow(headers.map(h => r[h])));
+      headers.forEach((_, i) => { ws.getColumn(i + 1).width = widths[i] || 15; });
+    }
+    const buf = await wb.xlsx.writeBuffer();
     res.setHeader('Content-Disposition', `attachment; filename="activity_reports_${Date.now()}.xlsx"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(buf);
@@ -222,19 +223,24 @@ router.get('/export-pdf', authenticate, authorize('manager', 'admin', 'hr', 'sup
 });
 
 // ── TEMPLATE download ────────────────────────────────────────────────────
-router.get('/template', authenticate, authorize('manager', 'admin', 'hr', 'super_admin'), (req, res) => {
-  const ws = XLSX.utils.aoa_to_sheet([
-    ['title', 'description', 'scheduled_date', 'location', 'assigned_emp_id'],
-    ['Block Visit - Araria', 'Awareness camp for MSMEs', '2025-04-10', 'Araria Block', 'EMP001'],
-    ['Training Workshop',    'Loan facilitation training', '2025-04-15', 'District HQ', ''],
-  ]);
-  ws['!cols'] = [{ wch: 30 }, { wch: 40 }, { wch: 18 }, { wch: 25 }, { wch: 18 }];
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Schedules');
-  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  res.setHeader('Content-Disposition', 'attachment; filename="schedule_template.xlsx"');
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.send(buf);
+router.get('/template', authenticate, authorize('manager', 'admin', 'hr', 'super_admin'), async (req, res) => {
+  try {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Schedules');
+    const rows = [
+      ['title', 'description', 'scheduled_date', 'location', 'assigned_emp_id'],
+      ['Block Visit - Araria', 'Awareness camp for MSMEs', '2025-04-10', 'Araria Block', 'EMP001'],
+      ['Training Workshop',    'Loan facilitation training', '2025-04-15', 'District HQ', ''],
+    ];
+    rows.forEach(row => ws.addRow(row));
+    [30, 40, 18, 25, 18].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+    const buf = await wb.xlsx.writeBuffer();
+    res.setHeader('Content-Disposition', 'attachment; filename="schedule_template.xlsx"');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buf);
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Template generation failed' });
+  }
 });
 
 // ── LIST schedules ────────────────────────────────────────────────────────
@@ -385,9 +391,16 @@ router.post('/bulk',
       return res.status(400).json({ success: false, message: 'No file uploaded' });
 
     try {
-      const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
-      const sheet    = workbook.Sheets[workbook.SheetNames[0]];
-      const rows     = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(req.file.buffer);
+      const sheet    = workbook.worksheets[0];
+      const headers  = [];
+      const rows     = [];
+      sheet.eachRow((row, rowNum) => {
+        const vals = row.values.slice(1).map(v => (v instanceof Date ? v.toISOString().split('T')[0] : (v != null ? String(v).trim() : '')));
+        if (rowNum === 1) { vals.forEach((v, i) => { headers[i] = v; }); }
+        else { const obj = {}; headers.forEach((h, i) => { if (h) obj[h] = vals[i] ?? ''; }); rows.push(obj); }
+      });
 
       if (!rows.length)
         return res.status(422).json({ success: false, message: 'Excel file is empty' });
@@ -419,8 +432,8 @@ router.post('/bulk',
 
           let scheduled_date = String(dateRaw).trim().replace(/[/\s]/g, '-');
           if (/^\d{5}$/.test(dateRaw)) {
-            const jsDate = XLSX.SSF.parse_date_code(Number(dateRaw));
-            scheduled_date = `${jsDate.y}-${String(jsDate.m).padStart(2, '0')}-${String(jsDate.d).padStart(2, '0')}`;
+            const d = new Date((Number(dateRaw) - 25569) * 86400 * 1000);
+            scheduled_date = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
           } else if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(scheduled_date)) {
             const parts = scheduled_date.split('-');
             scheduled_date = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;

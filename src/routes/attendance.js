@@ -67,51 +67,107 @@ async function runFaceCheck(selfieBuffer, enrolledPhotoUrl, mimetype, empName = 
   return { passed: true, confidence: faceResult.confidence }; // pass — include confidence for response
 }
 
-// ── Background face verification (runs after response is sent) ────────────
-// Semaphore: TensorFlow has global state — limit to 1 concurrent face verify
-// to prevent memory contention when multiple employees check in simultaneously.
+// ── Background face verify — shared semaphore (TF has global state) ──────────
 let _faceVerifyRunning = false;
 const _faceVerifyQueue = [];
 
-async function runBackgroundFaceVerify(recordId, selfieBuffer, enrolledPhotoUrl, mimetype, empName, empId) {
-  // Queue this job if another verification is already running
-  if (_faceVerifyRunning) {
-    await new Promise(resolve => _faceVerifyQueue.push(resolve));
-  }
+async function _withFaceSemaphore(fn) {
+  if (_faceVerifyRunning) await new Promise(r => _faceVerifyQueue.push(r));
   _faceVerifyRunning = true;
-  try {
-    const faceResult = await runFaceCheck(selfieBuffer, enrolledPhotoUrl, mimetype, empName);
-    if (faceResult?.passed) {
-      await AttendanceRecord.findByIdAndUpdate(recordId, {
-        $set: { face_verification_status: 'verified', face_confidence: faceResult.confidence },
-      });
-      await Notification.create({
-        _id: uuidv4(), user_id: empId,
-        title:   'Face Verified ✅',
-        message: `Check-in face verified (${faceResult.confidence}% match).`,
-        type:    'success', related_record_id: recordId,
-      });
-    } else {
-      await AttendanceRecord.findByIdAndUpdate(recordId, {
-        $set: { face_verification_status: 'failed', face_confidence: faceResult?.faceConfidence ?? 0 },
-      });
-      await Notification.create({
-        _id: uuidv4(), user_id: empId,
-        title:   'Face Verification Failed ⚠️',
-        message: faceResult?.message || 'Face could not be verified. Check-in is pending manager review.',
-        type:    'warning', related_record_id: recordId,
-      });
-    }
-    console.info(`[BGFaceVerify] record=${recordId} status=${faceResult?.passed ? 'verified' : 'failed'}`);
-  } catch (err) {
-    console.error('[BGFaceVerify] Error:', err.message);
-    await AttendanceRecord.findByIdAndUpdate(recordId, {
-      $set: { face_verification_status: 'failed', face_confidence: 0 },
-    }).catch(() => {});
-  } finally {
+  try { return await fn(); }
+  finally {
     _faceVerifyRunning = false;
-    if (_faceVerifyQueue.length > 0) _faceVerifyQueue.shift()(); // release next in queue
+    if (_faceVerifyQueue.length > 0) _faceVerifyQueue.shift()();
   }
+}
+
+// Initial check-in: threshold 70%
+async function runBackgroundFaceVerify(recordId, selfieBuffer, enrolledPhotoUrl, mimetype, empName, empId) {
+  await _withFaceSemaphore(async () => {
+    try {
+      const faceResult = await runFaceCheck(selfieBuffer, enrolledPhotoUrl, mimetype, empName);
+      if (faceResult?.passed) {
+        await AttendanceRecord.findByIdAndUpdate(recordId, {
+          $set: { face_verification_status: 'verified', face_confidence: faceResult.confidence },
+        });
+        await Notification.create({
+          _id: uuidv4(), user_id: empId,
+          title:   'Check-In Verified ✅',
+          message: 'Your check-in has been verified successfully.',
+          type:    'success', related_record_id: recordId,
+        });
+      } else {
+        await AttendanceRecord.findByIdAndUpdate(recordId, {
+          $set: { face_verification_status: 'failed', face_confidence: faceResult?.faceConfidence ?? 0 },
+        });
+        await Notification.create({
+          _id: uuidv4(), user_id: empId,
+          title:   'Face Not Verified — Retake Required ⚠️',
+          message: 'Face could not be verified. Please open the Attendance screen and retake your photo.',
+          type:    'warning', related_record_id: recordId,
+        });
+      }
+      console.info(`[BGFaceVerify] record=${recordId} status=${faceResult?.passed ? 'verified' : 'failed'}`);
+    } catch (err) {
+      console.error('[BGFaceVerify] Error:', err.message);
+      await AttendanceRecord.findByIdAndUpdate(recordId, {
+        $set: { face_verification_status: 'failed', face_confidence: 0 },
+      }).catch(() => {});
+    }
+  });
+}
+
+// Retake: threshold 40% — if still fails, escalate to manager
+async function runBackgroundRetakeVerify(recordId, selfieBuffer, enrolledPhotoUrl, mimetype, empName, empId, managerId) {
+  await _withFaceSemaphore(async () => {
+    try {
+      const faceResult = await runFaceCheck(selfieBuffer, enrolledPhotoUrl, mimetype, empName, RETAKE_THRESHOLD);
+      if (faceResult?.passed) {
+        await AttendanceRecord.findByIdAndUpdate(recordId, {
+          $set: { face_verification_status: 'verified', face_confidence: faceResult.confidence },
+        });
+        await Notification.create({
+          _id: uuidv4(), user_id: empId,
+          title:   'Check-In Verified ✅',
+          message: 'Your retake was accepted. Check-in is verified.',
+          type:    'success', related_record_id: recordId,
+        });
+      } else {
+        // Retake also failed — escalate to manager for manual review
+        const record = await AttendanceRecord.findById(recordId).lean();
+        await AttendanceRecord.findByIdAndUpdate(recordId, {
+          $set: {
+            face_verification_status: 'manager_review',
+            face_confidence: faceResult?.faceConfidence ?? 0,
+            status:       'Pending',   // surfaces in manager's queue
+            submitted_at: new Date(),
+          },
+        });
+        // Notify MANAGER
+        if (managerId) {
+          await Notification.create({
+            _id: uuidv4(), user_id: managerId,
+            title:   'Face Verification Review Needed 🔍',
+            message: `${empName}'s face could not be verified after retake (${record?.date}). Please review and approve or reject their check-in.`,
+            type:    'warning', related_record_id: recordId,
+          });
+        }
+        // Notify EMPLOYEE
+        await Notification.create({
+          _id: uuidv4(), user_id: empId,
+          title:   'Pending Manager Review',
+          message: 'Face could not be verified. Your manager has been notified and will approve or reject your check-in.',
+          type:    'info', related_record_id: recordId,
+        });
+      }
+      console.info(`[BGRetakeVerify] record=${recordId} status=${faceResult?.passed ? 'verified' : 'manager_review'}`);
+    } catch (err) {
+      console.error('[BGRetakeVerify] Error:', err.message);
+      await AttendanceRecord.findByIdAndUpdate(recordId, {
+        $set: { face_verification_status: 'failed', face_confidence: 0 },
+      }).catch(() => {});
+    }
+  });
 }
 
 // ── Multer — scan documents ───────────────────────────────────────────────
@@ -475,57 +531,44 @@ router.put('/:id/retake-face', authenticate, authorize('employee'), upload.singl
       return res.status(400).json({ success: false, message: 'Selfie is required for retake.' });
 
     const empUser = await User.findById(req.user.id)
-      .select('profile_photo_path facePhotoUrl name')
+      .select('profile_photo_path facePhotoUrl name manager_id')
       .lean();
     const enrolledPhotoUrl = empUser?.facePhotoUrl || empUser?.profile_photo_path || null;
 
     if (!enrolledPhotoUrl)
       return res.status(403).json({ success: false, message: 'No profile photo enrolled. Go to My Profile to upload your photo.' });
 
-    // Run face check with the lower retake threshold (40%)
-    const faceResult = await runFaceCheck(
-      req.file.buffer, enrolledPhotoUrl, req.file.mimetype, empUser.name, RETAKE_THRESHOLD
-    );
+    // Upload retake selfie immediately
+    const newSelfiePath = await uploadFile(req.file.buffer, 'ams/selfies', req.file.originalname, req.file.mimetype);
 
-    if (faceResult?.passed) {
-      // Upload the new selfie and mark as verified
-      const newSelfiePath = await uploadFile(req.file.buffer, 'ams/selfies', req.file.originalname, req.file.mimetype);
-      await AttendanceRecord.findByIdAndUpdate(req.params.id, {
-        $set: {
-          face_verification_status: 'verified',
-          face_confidence:          faceResult.confidence,
-          selfie_path:              newSelfiePath,
-        },
-      });
-      await Notification.create({
-        _id: uuidv4(), user_id: req.user.id,
-        title:   'Face Verified on Retake ✅',
-        message: `Retake accepted — ${faceResult.confidence}% match (threshold: ${RETAKE_THRESHOLD}%).`,
-        type:    'success', related_record_id: req.params.id,
-      });
-    } else {
-      // Still failed — update confidence so employee knows how close they are
-      await AttendanceRecord.findByIdAndUpdate(req.params.id, {
-        $set: { face_confidence: faceResult?.faceConfidence ?? 0 },
-      });
-      await Notification.create({
-        _id: uuidv4(), user_id: req.user.id,
-        title:   'Face Still Not Matching ⚠️',
-        message: faceResult?.message || `Match too low (${faceResult?.faceConfidence ?? 0}%). Check-in pending manager review.`,
-        type:    'warning', related_record_id: req.params.id,
-      });
-    }
+    // Set status to retake_pending — return immediately, verify in background
+    await AttendanceRecord.findByIdAndUpdate(req.params.id, {
+      $set: { face_verification_status: 'retake_pending', selfie_path: newSelfiePath },
+    });
 
-    const updated = await AttendanceRecord.findById(req.params.id).lean();
+    const updated  = await AttendanceRecord.findById(req.params.id).lean();
+    const selfBuf  = req.file.buffer;
+    const selfMime = req.file.mimetype;
+    const empName  = empUser.name;
+    const managerId = record.manager_id || empUser.manager_id || null;
+
     res.json({
       success:  true,
-      verified: !!faceResult?.passed,
-      message:  faceResult?.passed ? 'Face verified on retake!' : 'Face still not matching. Check-in pending manager review.',
+      message:  'Retake uploaded! Verifying in background…',
+      retakePending: true,
       data:     formatRecord(updated),
     });
+
+    // Face verify runs after response — uses 40% threshold
+    setImmediate(() => {
+      runBackgroundRetakeVerify(req.params.id, selfBuf, enrolledPhotoUrl, selfMime, empName, req.user.id, managerId);
+    });
+
   } catch (err) {
-    console.error('[RetakeFace] Error:', err.message || err);
-    res.status(500).json({ success: false, message: 'Server error' });
+    if (!res.headersSent) {
+      console.error('[RetakeFace] Error:', err.message || err);
+      res.status(500).json({ success: false, message: 'Server error' });
+    }
   }
 });
 
@@ -766,8 +809,9 @@ router.put('/:id/approve', authenticate, authorize('manager', 'admin'), async (r
       const emp = await User.findOne({ _id: record.emp_id, manager_id: req.user.id }).lean();
       if (!emp) return res.status(403).json({ success: false, message: 'Not your team member' });
 
-      const isMissedDraft = record.status === 'Draft' && record.checkin_time && !record.checkout_time && record.date < today;
-      if (!['Pending', 'Rejected'].includes(record.status) && !isMissedDraft)
+      const isMissedDraft  = record.status === 'Draft' && record.checkin_time && !record.checkout_time && record.date < today;
+      const isFaceReview   = record.face_verification_status === 'manager_review';
+      if (!['Pending', 'Rejected'].includes(record.status) && !isMissedDraft && !isFaceReview)
         return res.status(400).json({ success: false, message: 'Cannot approve in current state' });
 
       if (isMissedDraft) {
@@ -781,6 +825,7 @@ router.put('/:id/approve', authenticate, authorize('manager', 'admin'), async (r
     const update  = { status: 'Approved', manager_remark: remark || '', actioned_by: req.user.id, actioned_at: new Date() };
     if (isAdmin) update.admin_remark = remark || '';
     if (record.leave_type) update.leave_status = 'Approved';
+    if (record.face_verification_status === 'manager_review') update.face_verification_status = 'manager_approved';
 
     await AttendanceRecord.findByIdAndUpdate(record._id, { $set: update });
 
@@ -820,7 +865,8 @@ router.put('/:id/reject', authenticate, authorize('manager', 'admin'), [
     }
 
     const today = istDateStr();
-    if (record.status === 'Draft' && record.checkin_time && !record.checkout_time && record.date < today) {
+    const isFaceReviewRecord = record.face_verification_status === 'manager_review';
+    if (!isFaceReviewRecord && record.status === 'Draft' && record.checkin_time && !record.checkout_time && record.date < today) {
       await AttendanceRecord.findByIdAndUpdate(record._id, {
         $set: { is_missed_checkout: true, status: 'Pending', checkout_remarks: 'Employee did not check out. Requires manager approval.' },
       });
@@ -828,12 +874,16 @@ router.put('/:id/reject', authenticate, authorize('manager', 'admin'), [
 
     const update = { status: 'Rejected', manager_remark: remark, actioned_by: req.user.id, actioned_at: new Date() };
     if (record.leave_type) update.leave_status = 'Rejected';
+    if (record.face_verification_status === 'manager_review') update.face_verification_status = 'manager_rejected';
     await AttendanceRecord.findByIdAndUpdate(record._id, { $set: update });
 
-    const notifTitle = record.is_missed_checkout ? 'Missed Check-Out Rejected ✗' : record.leave_type ? 'Leave Rejected ✗' : 'Attendance Rejected ✗';
-    const notifMsg   = record.is_missed_checkout
-      ? `Your missed check-out on ${record.date} was rejected: ${remark}. You may check in again.`
-      : record.leave_type ? `Your ${record.leave_type} for ${record.date} was rejected: ${remark}` : `Your attendance for ${record.date} was rejected: ${remark}`;
+    const isFaceReject = record.face_verification_status === 'manager_review';
+    const notifTitle = isFaceReject ? 'Check-In Rejected ✗' : record.is_missed_checkout ? 'Missed Check-Out Rejected ✗' : record.leave_type ? 'Leave Rejected ✗' : 'Attendance Rejected ✗';
+    const notifMsg   = isFaceReject
+      ? `Your check-in for ${record.date} was rejected by your manager: ${remark}`
+      : record.is_missed_checkout
+        ? `Your missed check-out on ${record.date} was rejected: ${remark}. You may check in again.`
+        : record.leave_type ? `Your ${record.leave_type} for ${record.date} was rejected: ${remark}` : `Your attendance for ${record.date} was rejected: ${remark}`;
 
     await notify(record.emp_id, notifTitle, notifMsg, 'error', record._id, '/employee/history');
     await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'REJECT', entity_type: 'attendance', entity_id: record._id, old_value: record.status, new_value: 'Rejected' });

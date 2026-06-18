@@ -2,7 +2,7 @@ const express    = require('express');
 const router     = express.Router();
 const bcrypt     = require('bcryptjs');
 const multer     = require('multer');
-const XLSX       = require('xlsx');
+const ExcelJS    = require('exceljs');
 const { v4: uuidv4 } = require('uuid');
 const { body, validationResult } = require('express-validator');
 const { User, AttendanceRecord, Notification, AuditLog } = require('../models/database');
@@ -150,36 +150,42 @@ router.get('/team/attendance-summary', authenticate, authorize('manager', 'admin
 
 // ── GET /api/users/bulk-upload/template ──────────────────────────────────
 // Must be BEFORE /:id
-router.get('/bulk-upload/template', authenticate, authorize('super_admin', 'admin'), (req, res) => {
-  const wb = XLSX.utils.book_new();
-  const templateData = [
-    ['name', 'email', 'empId', 'password', 'role', 'roleType', 'designation', 'department', 'managerId', 'phone', 'assignedBlock', 'assignedDistrict'],
-    ['Manager One',  'manager1@brp.com', 'MGR001', 'R@m%Brp@26', 'manager',  'BRP', '', 'Engineering',    '',       '9876500001', 'Agartala', 'West Tripura'],
-    ['HR One',       'hr1@brp.com',      'HR001',  'R@m%Brp@26', 'hr',       'URP', '', 'HR',             '',       '9876500010', 'Agartala', 'West Tripura'],
-    ['Admin One',    'admin1@brp.com',   'ADM001', 'R@m%Brp@26', 'admin',    '',    '', 'Administration', '',       '9876500020', 'Agartala', 'West Tripura'],
-    ['Rajesh Kumar', 'rajesh@brp.com',   'EMP001', 'R@m%Brp@26', 'employee', 'BRP', '', 'Engineering',    'MGR001', '9876543210', 'Agartala', 'West Tripura'],
-  ];
-  const ws = XLSX.utils.aoa_to_sheet(templateData);
-  ws['!cols'] = [{ wch:16 },{ wch:22 },{ wch:10 },{ wch:12 },{ wch:12 },{ wch:10 },{ wch:14 },{ wch:16 },{ wch:14 },{ wch:13 },{ wch:14 },{ wch:16 }];
-  XLSX.utils.book_append_sheet(wb, ws, 'Users Template');
-  const rules = XLSX.utils.aoa_to_sheet([
-    ['Column','Required','Notes'],
-    ['name','YES','Full name'],['email','YES','Valid unique email'],
-    ['empId','YES','Unique employee ID'],['password','YES*','Min 6 chars. Required for new users only.'],
-    ['role','YES','employee, manager, admin, hr, super_admin'],
-    ['roleType','NO','BRP or URP (for employees)'],
-    ['designation','NO','Job title'],
-    ['department','YES','Department name'],
-    ['managerId','NO','Manager emp_id OR full name'],['phone','NO','10-digit mobile'],
-    ['assignedBlock','NO','Block name'],['assignedDistrict','NO','District name'],
-    ['','',''],['NOTE','','Add manager rows ABOVE employee rows'],
-  ]);
-  rules['!cols'] = [{ wch:18 },{ wch:10 },{ wch:65 }];
-  XLSX.utils.book_append_sheet(wb, rules, 'Rules');
-  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  res.setHeader('Content-Disposition', 'attachment; filename="bulk_upload_template.xlsx"');
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.send(buf);
+router.get('/bulk-upload/template', authenticate, authorize('super_admin', 'admin'), async (req, res) => {
+  try {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Users Template');
+    const templateData = [
+      ['name', 'email', 'empId', 'password', 'role', 'roleType', 'designation', 'department', 'managerId', 'phone', 'assignedBlock', 'assignedDistrict'],
+      ['Manager One',  'manager1@brp.com', 'MGR001', 'R@m%Brp@26', 'manager',  'BRP', '', 'Engineering',    '',       '9876500001', 'Agartala', 'West Tripura'],
+      ['HR One',       'hr1@brp.com',      'HR001',  'R@m%Brp@26', 'hr',       'URP', '', 'HR',             '',       '9876500010', 'Agartala', 'West Tripura'],
+      ['Admin One',    'admin1@brp.com',   'ADM001', 'R@m%Brp@26', 'admin',    '',    '', 'Administration', '',       '9876500020', 'Agartala', 'West Tripura'],
+      ['Rajesh Kumar', 'rajesh@brp.com',   'EMP001', 'R@m%Brp@26', 'employee', 'BRP', '', 'Engineering',    'MGR001', '9876543210', 'Agartala', 'West Tripura'],
+    ];
+    templateData.forEach(row => ws.addRow(row));
+    [16,22,10,12,12,10,14,16,14,13,14,16].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+
+    const rules = wb.addWorksheet('Rules');
+    [
+      ['Column','Required','Notes'],
+      ['name','YES','Full name'],['email','YES','Valid unique email'],
+      ['empId','YES','Unique employee ID'],['password','YES*','Min 6 chars. Required for new users only.'],
+      ['role','YES','employee, manager, admin, hr, super_admin'],
+      ['roleType','NO','BRP or URP (for employees)'],
+      ['designation','NO','Job title'],
+      ['department','YES','Department name'],
+      ['managerId','NO','Manager emp_id OR full name'],['phone','NO','10-digit mobile'],
+      ['assignedBlock','NO','Block name'],['assignedDistrict','NO','District name'],
+      ['','',''],['NOTE','','Add manager rows ABOVE employee rows'],
+    ].forEach(row => rules.addRow(row));
+    [18,10,65].forEach((w, i) => { rules.getColumn(i + 1).width = w; });
+
+    const buf = await wb.xlsx.writeBuffer();
+    res.setHeader('Content-Disposition', 'attachment; filename="bulk_upload_template.xlsx"');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buf);
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Template generation failed' });
+  }
 });
 
 // ── GET /api/users/:id ────────────────────────────────────────────────────
@@ -537,9 +543,16 @@ router.post('/request-location-change', authenticate, authorize('employee'), [
 router.post('/bulk-upload', authenticate, authorize('super_admin', 'admin'), uploadMem.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ success: false, message: 'Excel file required' });
   try {
-    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(req.file.buffer);
+    const ws = wb.worksheets[0];
+    const headers = [];
+    const rows = [];
+    ws.eachRow((row, rowNum) => {
+      const vals = row.values.slice(1).map(v => (v != null ? String(v).trim() : ''));
+      if (rowNum === 1) { vals.forEach((v, i) => { headers[i] = v; }); }
+      else { const obj = {}; headers.forEach((h, i) => { if (h) obj[h] = vals[i] ?? ''; }); if (Object.values(obj).some(v => v !== '')) rows.push(obj); }
+    });
     if (!rows.length) return res.status(400).json({ success: false, message: 'Empty spreadsheet' });
     
     const VALID_ROLES = ['employee', 'manager', 'admin', 'hr', 'super_admin'];
