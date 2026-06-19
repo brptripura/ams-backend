@@ -459,5 +459,32 @@ router.post('/seed', authenticate, authorize('super_admin'), async (req, res) =>
     res.status(500).json({ success: false, message: err.message });
   }
 });
-
+// ── POST /api/msme/self-register ─────────────────────────────────────────
+// Allows employees/managers to register a new MSME they visited
+router.post('/self-register', authenticate, [], [
+  body('msme_name').trim().notEmpty().withMessage('MSME name required'),
+ 
+  body('block_name').trim().notEmpty().withMessage('Block name required'),
+  body('district').trim().notEmpty().withMessage('District required'),
+  body('address').optional().trim(),
+], validate, async (req, res) => {
+  try {
+    const { msme_name,  block_name, district, address } = req.body;
+    const msme = await MsmeMaster.create({
+      _id: uuidv4(),
+      msme_name,
+      block_name,
+      district,
+      address: address || null,
+      sector: 'Other',
+      is_active: true,
+      added_by: req.user.id,
+      added_by_role: req.user.role,
+    });
+    res.status(201).json({ success: true, data: msme, already_exists: false });
+  } catch (err) {
+    console.error('[POST /msme/self-register]', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
 module.exports = router;

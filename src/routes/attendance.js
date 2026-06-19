@@ -192,16 +192,41 @@ router.get('/today', authenticate, async (req, res) => {
       { $addFields: { emp_name: { $arrayElemAt: ['$emp.name', 0] }, emp_code: { $arrayElemAt: ['$emp.emp_id', 0] } } },
       { $project: { emp: 0 } },
     ]);
-    const missedCheckoutBlock = await AttendanceRecord.findOne({
-      emp_id: req.user.id, date: { $lt: today },
-      checkin_time: { $ne: null }, checkout_time: null,
-      status: { $in: ['Pending', 'Draft'] },
-    }).sort({ date: -1 }).lean();
-    res.json({
-      success: true,
-      data: rows.length ? formatRecord(rows[0]) : null,
-      blockedByMissedCheckout: missedCheckoutBlock ? formatRecord(missedCheckoutBlock) : null,
-    });
+  // Auto-approve any dangling previous-day check-ins instead of blocking.
+const danglingRecords = await AttendanceRecord.find({
+  emp_id: req.user.id, date: { $lt: today },
+  checkin_time: { $ne: null }, checkout_time: null,
+  status: { $in: ['Pending', 'Draft'] },
+}).lean();
+
+for (const dr of danglingRecords) {
+  await AttendanceRecord.findByIdAndUpdate(dr._id, {
+    $set: {
+      status: 'Approved',
+      is_missed_checkout: true,
+      checkout_remarks: 'Auto-approved: employee did not check out.',
+      manager_remark: 'Auto-approved — missed checkout (system).',
+      actioned_by: null,
+      actioned_at: new Date(),
+    },
+  });
+  await notify(
+    req.user.id,
+    'Attendance Auto-Approved',
+    `Your attendance for ${dr.date} was automatically approved despite a missed check-out.`,
+    'success', dr._id, '/employee/history'
+  );
+  await AuditLog.create({
+    _id: uuidv4(), user_id: req.user.id, action: 'MISSED_CHECKOUT_AUTO_APPROVED',
+    entity_type: 'attendance', entity_id: dr._id, old_value: dr.status, new_value: 'Approved',
+  });
+}
+
+res.json({
+  success: true,
+  data: rows.length ? formatRecord(rows[0]) : null,
+  blockedByMissedCheckout: null, // always null now — never blocks check-in
+});
   } catch (err) { console.error(err); res.status(500).json({ success: false, message: 'Server error' }); }
 });
 
@@ -249,27 +274,35 @@ router.post('/checkin', authenticate, authorize('employee'), upload.single('self
     const today = istDateStr();
 
     // Block if previous missed-checkout still pending
-    const missedBlock = await AttendanceRecord.findOne({
-      emp_id: req.user.id, date: { $lt: today },
-      checkin_time: { $ne: null }, checkout_time: null,
-      status: { $in: ['Pending', 'Draft'] },
-    }).sort({ date: -1 }).lean();
+// Auto-approve any dangling previous-day records instead of blocking check-in.
+const danglingRecords = await AttendanceRecord.find({
+  emp_id: req.user.id, date: { $lt: today },
+  checkin_time: { $ne: null }, checkout_time: null,
+  status: { $in: ['Pending', 'Draft'] },
+}).lean();
 
-    if (missedBlock && missedBlock.status === 'Draft') {
-      await AttendanceRecord.findByIdAndUpdate(missedBlock._id, {
-        $set: {
-          is_missed_checkout: true,
-          status:             'Pending',
-          checkout_remarks:   'Employee did not check out. Requires manager approval.',
-        },
-      });
-    }
-    if (missedBlock) {
-      return res.status(403).json({
-        success: false,
-        message: 'You have a missed check-out pending manager approval. Cannot check in until resolved.',
-      });
-    }
+for (const dr of danglingRecords) {
+  await AttendanceRecord.findByIdAndUpdate(dr._id, {
+    $set: {
+      status: 'Approved',
+      is_missed_checkout: true,
+      checkout_remarks: 'Auto-approved: employee did not check out.',
+      manager_remark: 'Auto-approved — missed checkout (system).',
+      actioned_by: null,
+      actioned_at: new Date(),
+    },
+  });
+  await notify(
+    req.user.id,
+    'Attendance Auto-Approved',
+    `Your attendance for ${dr.date} was automatically approved despite a missed check-out.`,
+    'success', dr._id, '/employee/history'
+  );
+  await AuditLog.create({
+    _id: uuidv4(), user_id: req.user.id, action: 'MISSED_CHECKOUT_AUTO_APPROVED',
+    entity_type: 'attendance', entity_id: dr._id, old_value: dr.status, new_value: 'Approved',
+  });
+}
 
     const existing = await AttendanceRecord.findOne({ emp_id: req.user.id, date: today }).lean();
     let existingRejectedLeaveId = null;

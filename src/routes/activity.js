@@ -22,7 +22,7 @@ const UDYAM_RE = /^UDYAM-[A-Z]{2}-\d{2}-\d{7}$/;
 
 const activityValidators = [
   body('msme_name').trim().notEmpty().withMessage('MSME name required'),
-  body('udyam_number').matches(UDYAM_RE).withMessage('Format: UDYAM-XX-00-0000000'),
+body('udyam_number').optional({ checkFalsy: true }).matches(UDYAM_RE).withMessage('Format: UDYAM-XX-00-0000000'),
   body('activity_type').optional().trim(),
   body('sub_activity').optional().trim(),
   body('msme_address').optional().trim(),

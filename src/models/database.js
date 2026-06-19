@@ -161,7 +161,7 @@ const activitySchema = new mongoose.Schema({
   _id:               { type: String },
   user_id:           { type: String, ref: 'User', required: true },
   msme_name:         { type: String, required: true },
-  udyam_number:      { type: String, required: true },
+ udyam_number:      { type: String, default: null },
   // Legacy fields kept for backwards compatibility
   sector:            { type: String, default: null },
   support_type:      { type: String, default: null },
@@ -193,7 +193,7 @@ activitySchema.index({ activity_date: 1, block_name: 1 });
 const msmeMasterSchema = new mongoose.Schema({
   _id:          { type: String },
   msme_name:    { type: String, required: true },
-  udyam_number: { type: String, required: true, unique: true },
+udyam_number: { type: String, default: null },
   sector:       { type: String, default: null },
   block_name:   { type: String, required: true },
   district:     { type: String, required: true },
