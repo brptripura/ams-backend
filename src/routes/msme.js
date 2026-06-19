@@ -179,10 +179,24 @@ router.get('/by-block', authenticate, async (req, res) => {
       }
     }
 
-    const msmes = await MsmeMaster.find({ block_name: block, is_active: true })
+    let msmes = await MsmeMaster.find({ block_name: block, is_active: true })
       .select('msme_name udyam_number block_name district address sector')
       .sort({ msme_name: 1 })
       .lean();
+
+    // Fallback: data was imported at district level — infer district from block and query by district
+    if (msmes.length === 0) {
+      let districtForBlock = null;
+      for (const [dist, blocks] of Object.entries(DISTRICT_BLOCKS)) {
+        if (blocks.includes(block)) { districtForBlock = dist; break; }
+      }
+      if (districtForBlock) {
+        msmes = await MsmeMaster.find({ district: districtForBlock, is_active: true })
+          .select('msme_name udyam_number block_name district address sector')
+          .sort({ msme_name: 1 })
+          .lean();
+      }
+    }
 
     res.json({ success: true, data: msmes, total: msmes.length });
   } catch (err) {
