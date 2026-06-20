@@ -4,7 +4,7 @@ const multer         = require('multer');
 const { uploadFile } = require('../utils/storage');
 const { v4: uuidv4 } = require('uuid');
 const { body, validationResult } = require('express-validator');
-const { AttendanceRecord, User, Notification, AuditLog } = require('../models/database');
+const { AttendanceRecord, User, Notification, AuditLog, Activity } = require('../models/database');
 const { authenticate, authorize }                         = require('../middleware/auth');
 const { sendMail }                                        = require('../utils/mailer');
 const path = require('path');
@@ -295,15 +295,9 @@ router.get('/today', authenticate, async (req, res) => {
       { $addFields: { emp_name: { $arrayElemAt: ['$emp.name', 0] }, emp_code: { $arrayElemAt: ['$emp.emp_id', 0] } } },
       { $project: { emp: 0 } },
     ]);
-    const missedCheckoutBlock = await AttendanceRecord.findOne({
-      emp_id: req.user.id, date: { $lt: today },
-      checkin_time: { $ne: null }, checkout_time: null,
-      status: { $in: ['Pending', 'Draft'] },
-    }).sort({ date: -1 }).lean();
     res.json({
       success: true,
       data: rows.length ? formatRecord(rows[0]) : null,
-      blockedByMissedCheckout: missedCheckoutBlock ? formatRecord(missedCheckoutBlock) : null,
     });
   } catch (err) { console.error(err); res.status(500).json({ success: false, message: 'Server error' }); }
 });
@@ -351,27 +345,27 @@ router.post('/checkin', authenticate, authorize('employee'), upload.single('self
   try {
     const today = istDateStr();
 
-    // Block if previous missed-checkout still pending
-    const missedBlock = await AttendanceRecord.findOne({
-      emp_id: req.user.id, date: { $lt: today },
-      checkin_time: { $ne: null }, checkout_time: null,
-      status: { $in: ['Pending', 'Draft'] },
+    // Block if previous working day's activity was not submitted
+    const prevRecord = await AttendanceRecord.findOne({
+      emp_id:       req.user.id,
+      date:         { $lt: today },
+      checkin_time: { $ne: null },
+      status:       { $in: ['Approved', 'Pending', 'Draft'] },
     }).sort({ date: -1 }).lean();
 
-    if (missedBlock && missedBlock.status === 'Draft') {
-      await AttendanceRecord.findByIdAndUpdate(missedBlock._id, {
-        $set: {
-          is_missed_checkout: true,
-          status:             'Pending',
-          checkout_remarks:   'Employee did not check out. Requires manager approval.',
-        },
+    if (prevRecord) {
+      const activityCount = await Activity.countDocuments({
+        emp_id:        req.user.id,
+        activity_date: prevRecord.date,
       });
-    }
-    if (missedBlock) {
-      return res.status(403).json({
-        success: false,
-        message: 'You have a missed check-out pending manager approval. Cannot check in until resolved.',
-      });
+      if (activityCount === 0) {
+        return res.status(403).json({
+          success:       false,
+          code:          'ACTIVITY_REQUIRED',
+          message:       `Please fill in your activity for ${prevRecord.date} before checking in today.`,
+          activity_date: prevRecord.date,
+        });
+      }
     }
 
     const existing = await AttendanceRecord.findOne({ emp_id: req.user.id, date: today }).lean();
@@ -581,7 +575,8 @@ router.put('/:id/checkout', authenticate, authorize('employee'), upload.single('
     const record = await AttendanceRecord.findOne({ _id: req.params.id, emp_id: req.user.id }).lean();
     if (!record)               return res.status(404).json({ success: false, message: 'Record not found' });
     if (record.checkout_time)  return res.status(409).json({ success: false, message: 'Already checked out' });
-    if (record.status !== 'Draft') return res.status(400).json({ success: false, message: 'Cannot checkout — record already submitted' });
+    // Allow checkout from Draft (normal) OR Pending-without-checkout (face verify escalated to manager but employee still needs to checkout)
+    if (!['Draft', 'Pending'].includes(record.status)) return res.status(400).json({ success: false, message: 'Cannot checkout — record already processed' });
 
     const now             = new Date();
     const checkinDateTime = new Date(`${record.date}T${record.checkin_time}:00+05:30`);
