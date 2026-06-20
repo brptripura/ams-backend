@@ -458,16 +458,14 @@ router.post('/checkin', authenticate, authorize('employee'), upload.single('self
 
     res.status(201).json({
       success:             true,
-      message:             'Check-in recorded! Verifying face in background…',
-      verificationPending: true,
+      message:             'Check-in recorded!',
+      verificationPending: false,
       data:                formatRecord(record),
     });
-    // NOTE: response is already sent — no more res.* calls after this line.
-    // setImmediate runs outside the try/catch scope so headers-already-sent
-    // cannot happen even if the background job throws.
-    setImmediate(() => {
-      runBackgroundFaceVerify(id, selfieBuffer, enrolledPhotoUrl, selfiesMimetype, empName, empId);
-    });
+    // Face verification disabled
+    // setImmediate(() => {
+    //   runBackgroundFaceVerify(id, selfieBuffer, enrolledPhotoUrl, selfiesMimetype, empName, empId);
+    // });
 
   } catch (err) {
     // Only reached if an error occurs BEFORE res.status(201) was sent
@@ -548,15 +546,15 @@ router.put('/:id/retake-face', authenticate, authorize('employee'), upload.singl
 
     res.json({
       success:  true,
-      message:  'Retake uploaded! Verifying in background…',
-      retakePending: true,
+      message:  'Retake selfie uploaded.',
+      retakePending: false,
       data:     formatRecord(updated),
     });
 
-    // Face verify runs after response — uses 40% threshold
-    setImmediate(() => {
-      runBackgroundRetakeVerify(req.params.id, selfBuf, enrolledPhotoUrl, selfMime, empName, req.user.id, managerId);
-    });
+    // Face verification disabled
+    // setImmediate(() => {
+    //   runBackgroundRetakeVerify(req.params.id, selfBuf, enrolledPhotoUrl, selfMime, empName, req.user.id, managerId);
+    // });
 
   } catch (err) {
     if (!res.headersSent) {
@@ -629,27 +627,18 @@ router.put('/:id/checkout', authenticate, authorize('employee'), upload.single('
       }
     }
 
-    // ── Face verification for checkout ────────────────────────────────
-    let checkoutFaceConfidence = 0;
-    if (req.file) {
-      const empUser = await User.findById(req.user.id)
-        .select('profile_photo_path facePhotoUrl name')
-        .lean();
-      const enrolledPhotoUrl = empUser?.facePhotoUrl || empUser?.profile_photo_path || null;
-
-      if (enrolledPhotoUrl) {
-        const faceResult = await runFaceCheck(
-          req.file.buffer,
-          enrolledPhotoUrl,
-          req.file.mimetype,
-          empUser.name
-        );
-        if (!faceResult?.passed) {
-          return res.status(400).json(faceResult);
-        }
-        checkoutFaceConfidence = faceResult.confidence;
-      }
-    }
+    // ── Face verification for checkout (disabled) ────────────────────
+    const checkoutFaceConfidence = 0;
+    // if (req.file) {
+    //   const empUser = await User.findById(req.user.id)
+    //     .select('profile_photo_path facePhotoUrl name').lean();
+    //   const enrolledPhotoUrl = empUser?.facePhotoUrl || empUser?.profile_photo_path || null;
+    //   if (enrolledPhotoUrl) {
+    //     const faceResult = await runFaceCheck(req.file.buffer, enrolledPhotoUrl, req.file.mimetype, empUser.name);
+    //     if (!faceResult?.passed) return res.status(400).json(faceResult);
+    //     checkoutFaceConfidence = faceResult.confidence;
+    //   }
+    // }
     // ── End face verification ─────────────────────────────────────────
 
     const checkoutSelfiePath = req.file
