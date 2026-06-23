@@ -164,7 +164,7 @@ const activitySchema = new mongoose.Schema({
   _id:               { type: String },
   user_id:           { type: String, ref: 'User', required: true },
   msme_name:         { type: String, required: true },
-  udyam_number:      { type: String, required: true },
+  udyam_number:      { type: String, default: null },
   // Legacy fields kept for backwards compatibility
   sector:            { type: String, default: null },
   support_type:      { type: String, default: null },

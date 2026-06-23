@@ -4,7 +4,7 @@ const multer         = require('multer');
 const { uploadFile } = require('../utils/storage');
 const { v4: uuidv4 } = require('uuid');
 const { body, validationResult } = require('express-validator');
-const { AttendanceRecord, User, Notification, AuditLog, Activity } = require('../models/database');
+const { AttendanceRecord, User, Notification, AuditLog } = require('../models/database');
 const { authenticate, authorize }                         = require('../middleware/auth');
 const { sendMail }                                        = require('../utils/mailer');
 const path = require('path');
@@ -345,28 +345,18 @@ router.post('/checkin', authenticate, authorize('employee'), upload.single('self
   try {
     const today = istDateStr();
 
-    // Block if previous working day's activity was not submitted
+    // Block if the most recent past attendance (within last 7 days) has no activity
+    const sevenDaysAgo = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const sevenDaysAgoStr = sevenDaysAgo.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
     const prevRecord = await AttendanceRecord.findOne({
       emp_id:       req.user.id,
-      date:         { $lt: today },
+      date:         { $gte: sevenDaysAgoStr, $lt: today },
       checkin_time: { $ne: null },
       status:       { $in: ['Approved', 'Pending', 'Draft'] },
     }).sort({ date: -1 }).lean();
 
-    if (prevRecord) {
-      const activityCount = await Activity.countDocuments({
-        emp_id:        req.user.id,
-        activity_date: prevRecord.date,
-      });
-      if (activityCount === 0) {
-        return res.status(403).json({
-          success:       false,
-          code:          'ACTIVITY_REQUIRED',
-          message:       `Please fill in your activity for ${prevRecord.date} before checking in today.`,
-          activity_date: prevRecord.date,
-        });
-      }
-    }
 
     const existing = await AttendanceRecord.findOne({ emp_id: req.user.id, date: today }).lean();
     let existingRejectedLeaveId = null;

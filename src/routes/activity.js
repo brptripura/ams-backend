@@ -23,7 +23,7 @@ const UDYAM_RE = /^UDYAM-[A-Z]{2}-\d{2}-\d{7}$/;
 
 const activityValidators = [
   body('msme_name').trim().notEmpty().withMessage('MSME name required'),
-  body('udyam_number').matches(UDYAM_RE).withMessage('Format: UDYAM-XX-00-0000000'),
+  body('udyam_number').optional({ nullable: true, checkFalsy: true }).matches(UDYAM_RE).withMessage('Format: UDYAM-XX-00-0000000'),
   body('activity_type').optional().trim(),
   body('sub_activity').optional().trim(),
   body('msme_address').optional().trim(),
@@ -45,17 +45,24 @@ const validate = (req, res, next) => {
 
 const dateRangeFromFilter = (filter, startDate, endDate) => {
   if (startDate && endDate) return { start: startDate, end: endDate };
-  const now = new Date();
-  const pad = (d) => d.toISOString().slice(0, 10);
+  // Use IST (Asia/Kolkata) so date boundaries match what employees see on their devices
+  const istNow = new Date().toLocaleString('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
+  // en-CA gives YYYY-MM-DD format directly
+  const today = istNow.replace(/\//g, '-');
+  const [yyyy, mm] = today.split('-');
   if (filter === 'weekly') {
-    const d = new Date(now); d.setDate(d.getDate() - 7);
-    return { start: pad(d), end: pad(now) };
+    const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    d.setDate(d.getDate() - 7);
+    const w = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }).replace(/\//g, '-');
+    return { start: w, end: today };
   }
   if (filter === 'biweekly') {
-    const d = new Date(now); d.setDate(d.getDate() - 14);
-    return { start: pad(d), end: pad(now) };
+    const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    d.setDate(d.getDate() - 14);
+    const w = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }).replace(/\//g, '-');
+    return { start: w, end: today };
   }
-  return { start: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`, end: pad(now) };
+  return { start: `${yyyy}-${mm}-01`, end: today };
 };
 
 // ── POST /api/activity ─────────────────────────────────────────────────
@@ -80,7 +87,7 @@ router.post('/', authenticate, upload.array('documents', 10), activityValidators
       latitude:          latitude          || null,
       longitude:         longitude         || null,
       location_address:  location_address  || null,
-      activity_date:     typeof activity_date === 'string' ? activity_date : activity_date.toISOString().slice(0, 10),
+      activity_date:     typeof activity_date === 'string' ? activity_date.slice(0, 10) : activity_date.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }).replace(/\//g, '-'),
       remarks:           remarks           || null,
       resource_type: 'auto',
     });
@@ -130,12 +137,17 @@ router.get('/', authenticate, [
     const matchFilter = { activity_date: { $gte: start, $lte: end } };
 
     if (req.user.role === 'employee') {
-      matchFilter.user_id = req.user.id;
+      // Some old records store user_id as emp_id (legacy), new ones use UUID _id
+      // Search both so nothing is missed
+      const ids = [req.user.id, req.user.emp_id].filter(Boolean);
+      matchFilter.user_id = ids.length === 1 ? ids[0] : { $in: ids };
     } else if (req.user.role === 'manager') {
-      const teamMembers = await User.find({ manager_id: req.user.id, is_active: 1 }, { _id: 1 }).lean();
+      const teamMembers = await User.find({ manager_id: req.user.id, is_active: 1 }, { _id: 1, emp_id: 1 }).lean();
       if (teamMembers.length === 0)
         return res.json({ success: true, data: [], total: 0, start, end });
-      matchFilter.user_id = { $in: teamMembers.map(m => String(m._id)) };
+      // Include both UUID _id and emp_id for each team member (legacy support)
+      const memberIds = teamMembers.flatMap(m => [String(m._id), m.emp_id].filter(Boolean));
+      matchFilter.user_id = { $in: memberIds };
     }
     if (block)        matchFilter.block_name   = block;
     if (sector)       matchFilter.sector       = sector;
