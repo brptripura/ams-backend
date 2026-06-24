@@ -519,7 +519,7 @@ router.put('/:id/complete', authenticate, uploadAttach.array('attachments', 10),
 
     if (req.files?.length) {
       const urls = await Promise.all(
-        req.files.map(f => uploadFile(f.buffer, 'ams/schedule-docs', f.originalname, f.mimetype))
+        req.files.map(f => uploadFile(f.buffer, `ams/users/${req.user.emp_id || req.user.id}/schedule-docs`, f.originalname, f.mimetype))
       );
       await ScheduleDocument.insertMany(urls.map((url, i) => ({
         _id:         uuidv4(),

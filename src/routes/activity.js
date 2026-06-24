@@ -94,7 +94,7 @@ router.post('/', authenticate, upload.array('documents', 10), activityValidators
 
     if (req.files?.length) {
       const uploaded = await Promise.all(
-        req.files.map(f => uploadFile(f.buffer, 'ams/activity-docs', f.originalname, f.mimetype))
+        req.files.map(f => uploadFile(f.buffer, `ams/users/${req.user.emp_id || req.user.id}/activity-docs`, f.originalname, f.mimetype))
       );
       await ActivityDocument.insertMany(uploaded.map((url, i) => ({
         _id:         uuidv4(),
