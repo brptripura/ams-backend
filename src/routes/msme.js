@@ -3,7 +3,7 @@ const router  = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const multer  = require('multer');
 const { body, validationResult } = require('express-validator');
-const { MsmeMaster, User } = require('../models/database');
+const { MsmeMaster, MsmeProposal, User } = require('../models/database');
 const { authenticate, authorize } = require('../middleware/auth');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
@@ -467,6 +467,31 @@ router.post('/seed', authenticate, authorize('super_admin'), async (req, res) =>
   } catch (err) {
     console.error('[POST /msme/seed]', err);
     res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// POST /api/msme/propose — any authenticated employee submits a new MSME for admin review
+router.post('/propose', authenticate, async (req, res) => {
+  try {
+    const { msme_name, address, city, pincode, state, district, block_name, latitude, longitude } = req.body;
+    if (!msme_name?.trim()) return res.status(400).json({ error: 'Business name is required' });
+    const proposal = new MsmeProposal({
+      _id:         uuidv4(),
+      msme_name:   msme_name.trim(),
+      address:     address   || null,
+      city:        city      || null,
+      pincode:     pincode   || null,
+      state:       state     || null,
+      district:    district  || null,
+      block_name:  block_name || null,
+      latitude:    latitude  ? parseFloat(latitude)  : null,
+      longitude:   longitude ? parseFloat(longitude) : null,
+      proposed_by: req.user?.emp_id || req.user?.id || null,
+    });
+    await proposal.save();
+    res.json({ success: true, message: 'MSME submitted for admin review', id: proposal._id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

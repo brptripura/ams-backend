@@ -66,4 +66,28 @@ router.get('/', async (req, res) => {
   res.status(502).json({ error: 'geocoding failed', details: results.map(r => r.reason?.message) });
 });
 
+// GET /api/geocode/search?q=<text> — forward geocoding (name → lat/lng), India only
+router.get('/search', async (req, res) => {
+  const { q } = req.query;
+  if (!q || q.trim().length < 2) return res.status(400).json({ error: 'q required (min 2 chars)' });
+  try {
+    const r = await withTimeout(fetch(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q.trim())}&format=json&addressdetails=1&limit=6&countrycodes=in`,
+      { headers: { 'User-Agent': 'BRP-AMS/1.0 (brp-ams@raminfo.com)', 'Accept-Language': 'en' } }
+    ));
+    const results = await r.json();
+    res.json(results.map(item => ({
+      lat:          parseFloat(item.lat),
+      lng:          parseFloat(item.lon),
+      display_name: item.display_name,
+      city:         item.address?.city || item.address?.town || item.address?.village || item.address?.suburb || '',
+      state:        item.address?.state || '',
+      district:     item.address?.state_district || item.address?.county || item.address?.district || '',
+      postcode:     item.address?.postcode || '',
+    })));
+  } catch (err) {
+    res.status(502).json({ error: 'search failed', details: err.message });
+  }
+});
+
 module.exports = router;

@@ -215,6 +215,26 @@ msmeMasterSchema.index({ sector: 1 });
 msmeMasterSchema.index({ is_active: 1 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// MSME PROPOSALS — new MSMEs submitted by employees for admin review
+// ─────────────────────────────────────────────────────────────────────────────
+const msmePropSchema = new mongoose.Schema({
+  _id:          { type: String },
+  msme_name:    { type: String, required: true },
+  address:      { type: String, default: null },
+  city:         { type: String, default: null },
+  pincode:      { type: String, default: null },
+  state:        { type: String, default: null },
+  district:     { type: String, default: null },
+  block_name:   { type: String, default: null },
+  latitude:     { type: Number, default: null },
+  longitude:    { type: Number, default: null },
+  proposed_by:  { type: String, default: null }, // emp_id
+  status:       { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+}, { timestamps: true, collection: 'msme_proposals' });
+
+const MsmeProposal = mongoose.model('MsmeProposal', msmePropSchema);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ACTIVITY DOCUMENT
 // file_path  → Cloudinary secure URL (was: local filename like act_userid_123.jpg)
 // public_id  → Cloudinary public_id for deletion (NEW field)
@@ -324,6 +344,7 @@ module.exports = {
   Activity,
   ActivityDocument,
    MsmeMaster,
+  MsmeProposal,
 
   CustomOption,
   connectionPromise,

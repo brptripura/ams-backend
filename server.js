@@ -244,17 +244,17 @@ cron.schedule('0 18-23 * * *', async () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CRON 3 — 20:00 IST: Auto-checkout employees still checked in at EOD
+// CRON 3 — 22:00 IST (10 PM): Auto-checkout employees still checked in at EOD
 //
 // Any Draft record for today with checkin_time but no checkout_time is
-// automatically checked out at 20:00, marked Approved, and the employee
+// automatically checked out at 22:00, marked Approved, and the employee
 // is notified. is_auto_checkout is set to true for audit purposes.
 // ─────────────────────────────────────────────────────────────────────────────
-cron.schedule('30 22 * * *', async () => {
-  console.log('[AutoCheckout Cron] Running at 22:30 IST...');
+cron.schedule('0 22 * * *', async () => {
+  console.log('[AutoCheckout Cron] Running at 22:00 IST...');
   try {
     const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-    const eodTime  = '22:30';
+    const eodTime  = '22:00';
 
     const unchecked = await AttendanceRecord.find({
       date:          todayIST,
@@ -286,8 +286,8 @@ cron.schedule('30 22 * * *', async () => {
       await Notification.create({
         _id:               uuidv4(),
         user_id:           record.emp_id,
-        title:             '🕗 Auto Check-Out at 10:30 PM',
-        message:           `You were automatically checked out at 10:30 PM today. Worked ${workedHours.toFixed(1)} hrs.`,
+        title:             '🕗 Auto Check-Out at 10:00 PM',
+        message:           `You were automatically checked out at 10:00 PM today. Worked ${workedHours.toFixed(1)} hrs.`,
         type:              'info',
         related_record_id: record._id,
         link:              '/employee/history',
