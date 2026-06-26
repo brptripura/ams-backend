@@ -49,14 +49,16 @@ app.use(helmet({
 }));
 
 const ALLOWED_ORIGINS = [
-  process.env.FRONTEND_URL || 'http://localhost:3000',
-  process.env.BACKEND_URL  || 'https://mm-services.brptripura.com',
+  'https://monitermark.brptripura.com',
+  'https://mm-service.brptripura.com',
+  process.env.FRONTEND_URL,
+  process.env.BACKEND_URL,
   'http://localhost:3000',
   'http://localhost:3001',
   'capacitor://localhost',
   'http://localhost',
   'https://localhost',
-];
+].filter(Boolean);
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
