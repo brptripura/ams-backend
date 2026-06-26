@@ -3,7 +3,7 @@ const router  = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const multer  = require('multer');
 const { body, validationResult } = require('express-validator');
-const { MsmeMaster, User } = require('../models/database');
+const { MsmeMaster, MsmeProposal, User } = require('../models/database');
 const { authenticate, authorize } = require('../middleware/auth');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
@@ -459,32 +459,56 @@ router.post('/seed', authenticate, authorize('super_admin'), async (req, res) =>
     res.status(500).json({ success: false, message: err.message });
   }
 });
-// ── POST /api/msme/self-register ─────────────────────────────────────────
-// Allows employees/managers to register a new MSME they visited
-router.post('/self-register', authenticate, [], [
-  body('msme_name').trim().notEmpty().withMessage('MSME name required'),
+// // ── POST /api/msme/self-register ─────────────────────────────────────────
+// // Allows employees/managers to register a new MSME they visited
+// router.post('/self-register', authenticate, [], [
+//   body('msme_name').trim().notEmpty().withMessage('MSME name required'),
  
-  body('block_name').trim().notEmpty().withMessage('Block name required'),
-  body('district').trim().notEmpty().withMessage('District required'),
-  body('address').optional().trim(),
-], validate, async (req, res) => {
+//   body('block_name').trim().notEmpty().withMessage('Block name required'),
+//   body('district').trim().notEmpty().withMessage('District required'),
+//   body('address').optional().trim(),
+//  ], validate, async (req, res) => {
+//   try {
+//     const { msme_name,  block_name, district, address } = req.body;
+//     const msme = await MsmeMaster.create({
+//       _id: uuidv4(),
+//       msme_name,
+//       block_name,
+//       district,
+//       address: address || null,
+//       sector: 'Other',
+//       is_active: true,
+//       added_by: req.user.id,
+//       added_by_role: req.user.role,
+//     });
+//     res.status(201).json({ success: true, data: msme, already_exists: false });
+//   } catch (err) {
+//     console.error('[POST /msme/self-register]', err);
+//     res.status(500).json({ success: false, message: 'Server error' });
+//   }
+// });
+// POST /api/msme/propose — any authenticated employee submits a new MSME for admin review
+router.post('/propose', authenticate, async (req, res) => {
   try {
-    const { msme_name,  block_name, district, address } = req.body;
-    const msme = await MsmeMaster.create({
-      _id: uuidv4(),
-      msme_name,
-      block_name,
-      district,
-      address: address || null,
-      sector: 'Other',
-      is_active: true,
-      added_by: req.user.id,
-      added_by_role: req.user.role,
+    const { msme_name, address, city, pincode, state, district, block_name, latitude, longitude } = req.body;
+    if (!msme_name?.trim()) return res.status(400).json({ error: 'Business name is required' });
+    const proposal = new MsmeProposal({
+      _id:         uuidv4(),
+      msme_name:   msme_name.trim(),
+      address:     address   || null,
+      city:        city      || null,
+      pincode:     pincode   || null,
+      state:       state     || null,
+      district:    district  || null,
+      block_name:  block_name || null,
+      latitude:    latitude  ? parseFloat(latitude)  : null,
+      longitude:   longitude ? parseFloat(longitude) : null,
+      proposed_by: req.user?.emp_id || req.user?.id || null,
     });
-    res.status(201).json({ success: true, data: msme, already_exists: false });
+    await proposal.save();
+    res.json({ success: true, message: 'MSME submitted for admin review', id: proposal._id });
   } catch (err) {
-    console.error('[POST /msme/self-register]', err);
-    res.status(500).json({ success: false, message: 'Server error' });
+    res.status(500).json({ error: err.message });
   }
 });
 module.exports = router;

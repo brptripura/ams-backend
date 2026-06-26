@@ -669,7 +669,7 @@ router.post(
  
       const photoPath = await uploadFile(
         req.file.buffer,
-        'ams/profile-photos',
+        `ams/employees/${req.user.emp_id || req.user.id}/profile-photos`,
         req.file.originalname,
         req.file.mimetype,
       );

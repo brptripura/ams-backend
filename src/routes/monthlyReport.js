@@ -53,7 +53,7 @@ router.post('/upload', protect, upload.single('file'), async (req, res) => {
 const isImage = req.file.mimetype.startsWith('image/');
 const isPdf   = req.file.mimetype === 'application/pdf';
 const result  = await uploadToCloudinary(req.file.buffer, {
-  folder:          'monthly_reports',
+  folder:          `ams/employees/${req.user.emp_id || req.user.id}/monthly_reports`,
   resource_type:   (isImage || isPdf) ? 'image' : 'raw',  // PDFs upload as 'image' → served inline
   public_id:       `${req.user.id}_${month_key}`,
   use_filename:    true,

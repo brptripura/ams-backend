@@ -272,6 +272,9 @@ app.use('/api/msme',              require('./src/routes/msme'));
 app.use('/api/custom-options',    require('./src/routes/custom-options'));
 const monthlyReportRoutes = require('./src/routes/monthlyReport');
 app.use('/api/monthly-report', monthlyReportRoutes);
+app.use('/api/geocode',           require('./src/routes/geocode'));
+app.use('/api/file',              require('./src/routes/file'));
+
 // Health check — version bump triggers Render redeploy detection
 app.get('/api/health', (req, res) => {
   res.json({

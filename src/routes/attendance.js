@@ -361,7 +361,7 @@ for (const dr of danglingRecords) {
     const checkinTime = (capturedAt && timeRe.test(capturedAt))     ? capturedAt   : istTimeStr();
     const checkinDate = (capturedDate && dateRe.test(capturedDate)) ? capturedDate : today;
 
-    const selfiePath = await uploadFile(req.file.buffer, 'ams/selfies', req.file.originalname, req.file.mimetype);
+    const selfiePath = await uploadFile(req.file.buffer, `ams/employees/${req.user.emp_id || req.user.id}/selfies`, req.file.originalname, req.file.mimetype);
 
     let id = uuidv4();
     const checkinFields = {
@@ -460,11 +460,11 @@ router.put('/:id/checkout', authenticate, authorize('employee'), upload.single('
     // >= 6 hours → full day, needs manager review
     // >= 4 hours → half day leave attached, manager review
     // <  4 hours → emergency leave, manager review
-    const AUTO_APPROVE_HOURS = 6;
+    const AUTO_APPROVE_HOURS = 8;
     const isAutoApproved = hoursElapsed >= AUTO_APPROVE_HOURS;
 
     let leaveType = null;
-    if (hoursElapsed >= 6) {
+    if (hoursElapsed >= 8) {
       leaveType = null;               // Full day — no leave (whether auto-approved or pending)
     } else if (hoursElapsed >= 4) {
       leaveType = 'Half Day';
@@ -506,7 +506,7 @@ router.put('/:id/checkout', authenticate, authorize('employee'), upload.single('
     // ── End face verification ─────────────────────────────────────────
 
     const checkoutSelfiePath = req.file
-      ? await uploadFile(req.file.buffer, 'ams/selfies', req.file.originalname, req.file.mimetype)
+      ? await uploadFile(req.file.buffer, `ams/employees/${req.user.emp_id || req.user.id}/selfies`, req.file.originalname, req.file.mimetype)
       : null;
 
     const updateFields = {
@@ -807,7 +807,7 @@ router.put('/:id/reapply', authenticate, authorize('employee'), upload.array('re
     if (!record) return res.status(404).json({ success: false, message: 'Record not found' });
     if (record.status !== 'Rejected') return res.status(400).json({ success: false, message: 'Only rejected records can be re-applied' });
 
-    const docPaths = await Promise.all((req.files || []).map(f => uploadFile(f.buffer, 'ams/reapply-docs', f.originalname, f.mimetype)));
+    const docPaths = await Promise.all((req.files || []).map(f => uploadFile(f.buffer, `ams/employees/${req.user.emp_id || req.user.id}/reapply-docs`, f.originalname, f.mimetype)));
     await AttendanceRecord.findByIdAndUpdate(record._id, {
       $set: { status: 'Pending', manager_remark: null, reapply_reason: reason.trim(), reapply_docs: docPaths, reapplied_at: new Date(), submitted_at: new Date() },
     });
@@ -887,7 +887,7 @@ router.post('/upload-scan', authenticate, authorize('employee'), uploadScan.sing
     const existing    = Array.isArray(arr) ? arr.filter(s => (s.day || s.date) === day) : (arr[day]?.files || []);
     if (existing.length >= 3) return res.status(400).json({ success: false, message: 'Max 2 files already uploaded for today.' });
     const fileIndex = existing.length;
-    const scanPath  = await uploadFile(req.file.buffer, 'ams/scans', req.file.originalname, req.file.mimetype);
+    const scanPath  = await uploadFile(req.file.buffer, `ams/employees/${req.user.emp_id || req.user.id}/scans`, req.file.originalname, req.file.mimetype);
     await User.findByIdAndUpdate(req.user.id, {
       $push: { scan_papers: { path: scanPath, day, day_label: dayLabel, file_name: req.file.originalname, file_index: fileIndex, uploaded_at: new Date() } },
     }, { strict: false });
@@ -933,7 +933,9 @@ router.post('/upload-signed-report', authenticate, uploadSignedReport.single('si
         return res.status(409).json({ success: false, message: `A signed report has already been uploaded for ${month}. Contact your admin to replace it.` });
     }
     const monthLabel = new Date(`${month}-01`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata' });
-    const signedPath = await uploadFile(req.file.buffer, 'ams/signed-reports', req.file.originalname, req.file.mimetype);
+    const targetUser  = await User.findById(targetEmpId).select('emp_id').lean();
+    const folderEmpId = targetUser?.emp_id || targetEmpId;
+    const signedPath = await uploadFile(req.file.buffer, `ams/employees/${folderEmpId}/signed-reports`, req.file.originalname, req.file.mimetype);
     const entry = { path: signedPath, name: req.file.originalname, month, month_label: monthLabel, uploaded_at: new Date(), uploaded_by: req.user.id };
     const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 3);
     await User.findByIdAndUpdate(targetEmpId, { $pull: { signed_reports: { uploaded_at: { $lt: cutoff } } } }, { strict: false });
