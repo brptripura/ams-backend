@@ -470,7 +470,7 @@ router.delete('/:id', authenticate, authorize('admin', 'super_admin'), async (re
 
 // ── POST /api/users/request-assignment ───────────────────────────────────
 router.post('/request-assignment', authenticate, authorize('employee'), [
-  body('type').isIn(['manager', 'block']).withMessage('type must be "manager" or "block"'),
+  body('type').isIn(['manager', 'block', 'photo', 'location', 'role_type', 'district', 'hr']).withMessage('Invalid request type'),
   body('note').optional().trim(),
 ], validate, async (req, res) => {
   try {
