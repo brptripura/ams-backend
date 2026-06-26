@@ -660,25 +660,7 @@ router.post(
       }
  
       const user = await User.findById(req.user.id).select('profile_photo_path profile_photo_uploaded role').lean();
- 
-      // ── FIX 2A: Check if user role is allowed ────────────────────────────
-      if (!['employee'].includes(user?.role)) {
-        return res.status(403).json({
-          success: false,
-          message: 'Profile photo enrollment is only available for employees.',
-          locked: true,
-        });
-      }
-
-      // ── LOCKED: reject if already uploaded ────────────────────────────
-      if (user?.profile_photo_path) {
-        return res.status(409).json({
-          success: false,
-          message:  'Profile photo already enrolled. It cannot be changed. Contact your admin if there is an issue.',
-          locked:   true,
-          uploadedAt: user.profile_photo_uploaded,
-        });
-      }
+      const isUpdate = !!user?.profile_photo_path;
  
       const photoPath = await uploadFile(
         req.file.buffer,
@@ -699,12 +681,12 @@ router.post(
         _id: uuidv4(), user_id: req.user.id,
         action: 'PROFILE_PHOTO_UPLOAD',
         entity_type: 'user', entity_id: req.user.id,
-        new_value: 'Profile photo enrolled (one-time)',
+        new_value: isUpdate ? 'Profile photo updated' : 'Profile photo enrolled',
       });
- 
+
       res.status(201).json({
-        success:    true,
-        message:    'Profile photo enrolled successfully. This is permanent and cannot be changed.',
+        success:  true,
+        message:  isUpdate ? 'Profile photo updated successfully.' : 'Profile photo uploaded successfully.',
         photoPath,
       });
     } catch (err) {
