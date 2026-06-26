@@ -477,9 +477,18 @@ router.post('/request-assignment', authenticate, authorize('employee'), [
     const { type, note } = req.body;
     const emp    = await User.findById(req.user.id).select('name emp_id email').lean();
     const admins = await User.find({ role: 'admin', is_active: 1 }).select('_id email').lean();
-    const label   = type === 'manager' ? 'Manager Assignment' : 'Block Assignment';
+    const labelMap = {
+      manager:   'Manager Assignment',
+      block:     'Block Assignment',
+      photo:     'Profile Photo Update',
+      location:  'Location / Block Change',
+      role_type: 'Designation Change',
+      district:  'District Assignment',
+      hr:        'HR (Competent Authority) Assignment',
+    };
+    const label   = labelMap[type] || `${type} Change`;
     const title   = `Request: ${label}`;
-    const message = note ? `${emp.name} (${emp.emp_id}) requests a ${type === 'manager' ? 'reporting manager' : 'block'} assignment. Note: ${note}` : `${emp.name} (${emp.emp_id}) requests a ${type === 'manager' ? 'reporting manager' : 'block'} assignment.`;
+    const message = `${emp.name} (${emp.emp_id}) has requested: ${label}.${note ? ` Note: ${note}` : ''}`;
     
     if (admins.length) {
       await Notification.insertMany(admins.map(a => ({ 
