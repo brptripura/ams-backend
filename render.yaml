@@ -12,7 +12,7 @@ services:
       - key: FRONTEND_URL
         value: https://monitermark.brptripura.com
       - key: BACKEND_URL
-        value: https://mm-services.brptripura.com
+        value: https://mm-service.brptripura.com
       # Set these in Render Dashboard (sensitive — do not commit values):
       # MONGO_URI, JWT_SECRET, JWT_EXPIRES_IN
       # CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
