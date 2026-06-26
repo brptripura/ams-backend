@@ -246,41 +246,45 @@ cron.schedule('0 18-23 * * *', async () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CRON 3 — 22:00 IST (10 PM): Auto-checkout employees still checked in at EOD
+// CRON 3 — Every 15 min: Auto-checkout employees 9 hours after check-in
 //
-// Any Draft record for today with checkin_time but no checkout_time is
-// automatically checked out at 22:00, marked Approved, and the employee
-// is notified. is_auto_checkout is set to true for audit purposes.
+// Finds any Draft record with a check-in but no check-out where the current
+// time has passed (check-in time + 9 hours). Checks out at exactly the
+// 9-hour mark, marks Approved, and notifies the employee.
 // ─────────────────────────────────────────────────────────────────────────────
-cron.schedule('0 22 * * *', async () => {
-  console.log('[AutoCheckout Cron] Running at 22:00 IST...');
+cron.schedule('*/15 * * * *', async () => {
   try {
-    const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-    const eodTime  = '22:00';
-
     const unchecked = await AttendanceRecord.find({
-      date:          todayIST,
       status:        'Draft',
       checkin_time:  { $ne: null },
       checkout_time: null,
     }).lean();
 
-    console.log(`[AutoCheckout Cron] ${unchecked.length} record(s) to auto-checkout`);
+    if (!unchecked.length) return;
+
+    const nowUTC = new Date();
 
     for (const record of unchecked) {
-      const checkinDT   = new Date(`${record.date}T${record.checkin_time}:00+05:30`);
-      const eodDT       = new Date(`${record.date}T${eodTime}:00+05:30`);
-      const workedHours = Math.round(((eodDT - checkinDT) / 3600000) * 100) / 100;
+      const checkinDT      = new Date(`${record.date}T${record.checkin_time}:00+05:30`);
+      const autoCheckoutDT = new Date(checkinDT.getTime() + 9 * 3600 * 1000);
+
+      if (nowUTC < autoCheckoutDT) continue;
+
+      // Format checkout time in IST as HH:MM
+      const checkoutTime = autoCheckoutDT.toLocaleTimeString('en-CA', {
+        timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false,
+      });
+      const workedHours = 9;
       const now         = new Date();
 
       await AttendanceRecord.findByIdAndUpdate(record._id, {
         $set: {
-          checkout_time:    eodTime,
+          checkout_time:    checkoutTime,
           worked_hours:     workedHours,
           is_auto_checkout: true,
           status:           'Approved',
           actioned_at:      now,
-          manager_remark:   `Auto-checked out at EOD (${workedHours.toFixed(1)} hrs)`,
+          manager_remark:   `Auto-checked out after 9 hours (check-in: ${record.checkin_time}, checkout: ${checkoutTime})`,
           submitted_at:     now,
         },
       });
@@ -288,20 +292,18 @@ cron.schedule('0 22 * * *', async () => {
       await Notification.create({
         _id:               uuidv4(),
         user_id:           record.emp_id,
-        title:             '🕗 Auto Check-Out at 10:00 PM',
-        message:           `You were automatically checked out at 10:00 PM today. Worked ${workedHours.toFixed(1)} hrs.`,
+        title:             '🕗 Auto Check-Out (9 Hours)',
+        message:           `You were automatically checked out at ${checkoutTime} after 9 hours on duty.`,
         type:              'info',
         related_record_id: record._id,
         link:              '/employee/history',
       });
-    }
 
-    console.log(`[AutoCheckout Cron] Done — ${unchecked.length} auto-checked out.`);
+      console.log(`[AutoCheckout Cron] Auto-checked out ${record.emp_id} at ${checkoutTime} (9h after ${record.checkin_time})`);
+    }
   } catch (err) {
     console.error('[AutoCheckout Cron] Error:', err.message);
   }
-}, {
-  timezone: 'Asia/Kolkata',
 });
 
 // ── Revoked-token pruning ─────────────────────────────────────────────────
