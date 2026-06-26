@@ -660,7 +660,14 @@ router.post(
       }
  
       const user = await User.findById(req.user.id).select('profile_photo_path profile_photo_uploaded role').lean();
-      const isUpdate = !!user?.profile_photo_path;
+
+      if (user?.profile_photo_path) {
+        return res.status(409).json({
+          success: false,
+          message: 'Profile photo already uploaded. Raise a request through the app to update it.',
+          locked:  true,
+        });
+      }
  
       const photoPath = await uploadFile(
         req.file.buffer,
