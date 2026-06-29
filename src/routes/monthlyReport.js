@@ -4,7 +4,7 @@ const multer     = require('multer');
 const cloudinary = require('cloudinary').v2;
 const { authenticate: protect } = require('../middleware/auth');
 const { MonthlyReport } =require('../models/database');
-const { employeeFolderLabel } = require('../utils/folderLabel');
+const { employeeFolderLabel } = require('../utils/folderlabel');
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
