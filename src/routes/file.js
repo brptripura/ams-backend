@@ -13,12 +13,27 @@ router.get('/proxy', async (req, res) => {
 
   try {
     const upstream = await fetch(url);
-    if (!upstream.ok) return res.status(upstream.status).end();
+    if (!upstream.ok) {
+      // Never forward a 401 to the client — the Axios interceptor treats it as session-expired
+      const status = upstream.status === 401 ? 502 : upstream.status;
+      return res.status(status).json({ error: `Upstream fetch failed: ${upstream.status}` });
+    }
 
-    const rawType    = upstream.headers.get('content-type') || 'application/octet-stream';
-    const safeType   = /^(application\/pdf|image\/|text\/plain)/.test(rawType)
-      ? rawType : 'application/octet-stream';
-    const disp       = disposition === 'attachment' ? 'attachment' : 'inline';
+    const rawType  = upstream.headers.get('content-type') || '';
+    const ext      = (name || '').split('.').pop().toLowerCase();
+    const EXT_MAP  = {
+      pdf:  'application/pdf',
+      jpg:  'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+      gif:  'image/gif',  webp: 'image/webp', svg: 'image/svg+xml',
+      txt:  'text/plain',
+    };
+    const guessed  = EXT_MAP[ext] || '';
+    const VIEWABLE = /^(application\/pdf|image\/|text\/plain)/;
+    // Use Cloudinary's type if viewable; fall back to extension guess; else octet-stream
+    const safeType = VIEWABLE.test(rawType) ? rawType
+      : VIEWABLE.test(guessed)              ? guessed
+      : rawType                             || 'application/octet-stream';
+    const disp     = disposition === 'attachment' ? 'attachment' : 'inline';
     const filename   = (name || 'file').replace(/"/g, "'");
 
     res.setHeader('Content-Type', safeType);
