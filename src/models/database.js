@@ -94,7 +94,7 @@ const attendanceRecordSchema = new mongoose.Schema({
   worked_hours:         { type: Number, default: null },
   is_auto_checkout:     { type: Boolean, default: false },
   checkout_remarks:     { type: String, default: null },
-  leave_type:           { type: String, enum: ['Sick Leave', 'Casual Leave', 'Half Day', 'Emergency Leave', null], default: null },
+  leave_type:           { type: String, enum: ['Casual Leave', 'Half Day', 'Emergency Leave', null], default: null },
   leave_reason:         { type: String, default: null },
   leave_status:         { type: String, enum: ['Pending', 'Approved', 'Rejected', null], default: null },
   reapply_reason:       { type: String, default: null },

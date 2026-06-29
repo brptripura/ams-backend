@@ -1,4 +1,4 @@
-const express        = require('express');
+﻿const express        = require('express');
 const router         = express.Router();
 const multer         = require('multer');
 const { uploadFile } = require('../utils/storage');
@@ -716,7 +716,7 @@ router.put('/:id/checkout', authenticate, authorize('employee'), upload.single('
 router.post('/apply-leave', authenticate, authorize('employee'), [
   body('date').isDate().withMessage('Valid start date required'),
   body('endDate').optional().isDate(),
-  body('leaveType').isIn(['Sick Leave', 'Casual Leave', 'Half Day', 'Emergency Leave']),
+  body('leaveType').isIn(['Casual Leave', 'Half Day', 'Emergency Leave']),
   body('reason').notEmpty(),
 ], async (req, res) => {
   const errors = validationResult(req);
@@ -903,7 +903,7 @@ router.put('/:id/hr-override', authenticate, authorize('hr', 'super_admin'), asy
 // PUT /api/attendance/:id/leave-request
 // ─────────────────────────────────────────────────────────────────────────────
 router.put('/:id/leave-request', authenticate, authorize('employee'), [
-  body('leaveType').isIn(['Sick Leave', 'Casual Leave', 'Half Day', 'Emergency Leave']),
+  body('leaveType').isIn(['Casual Leave', 'Half Day', 'Emergency Leave']),
   body('reason').notEmpty(),
 ], async (req, res) => {
   const errors = validationResult(req);
@@ -996,7 +996,7 @@ router.get('/stats/summary', authenticate, async (req, res) => {
         missed_checkout: { $sum: { $cond: [{ $eq: ['$is_missed_checkout', true]     }, 1, 0] } },
         on_duty:         { $sum: { $cond: [{ $eq: ['$duty_type', 'On Duty']         }, 1, 0] } },
         office_duty:     { $sum: { $cond: [{ $eq: ['$duty_type', 'Office Duty']     }, 1, 0] } },
-        sick_leave:      { $sum: { $cond: [{ $eq: ['$leave_type', 'Sick Leave']     }, 1, 0] } },
+        
         casual_leave:    { $sum: { $cond: [{ $eq: ['$leave_type', 'Casual Leave']   }, 1, 0] } },
         half_day:        { $sum: { $cond: [{ $eq: ['$leave_type', 'Half Day']       }, 1, 0] } },
         emergency_leave: { $sum: { $cond: [{ $eq: ['$leave_type', 'Emergency Leave']}, 1, 0] } },
@@ -1005,7 +1005,7 @@ router.get('/stats/summary', authenticate, async (req, res) => {
       }},
       { $project: { _id: 0 } },
     ]);
-    const stats = result[0] || { total:0, approved:0, pending:0, rejected:0, draft:0, missed_checkout:0, on_duty:0, office_duty:0, sick_leave:0, casual_leave:0, half_day:0, emergency_leave:0, total_leaves:0, lop_count:0 };
+    const stats = result[0] || { total:0, approved:0, pending:0, rejected:0, draft:0, missed_checkout:0, on_duty:0, office_duty:0, casual_leave:0, half_day:0, emergency_leave:0, total_leaves:0, lop_count:0 };
     res.json({ success: true, data: stats });
   } catch (err) { console.error(err); res.status(500).json({ success: false, message: 'Server error' }); }
 });

@@ -153,12 +153,17 @@ if (existingSuperAdmin) {
 });
 // ── POST /api/auth/login ──────────────────────────────────────────────────
 router.post('/login', loginLimiter, [
-  body('email').isEmail().normalizeEmail({ gmail_remove_dots: false, all_lowercase: true }),
+  body('email').trim().notEmpty().withMessage('Email or Employee ID is required'),
   body('password').notEmpty(),
 ], validate, async (req, res) => {
   try {
-    const { email, password } = req.body;
-    const user = await User.findOne({ email, is_active: 1 }).lean();
+    const raw = req.body.email.trim();
+    // If input looks like an email, search by email; otherwise search by emp_id
+    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw);
+    const query = isEmail
+      ? { email: raw.toLowerCase(), is_active: 1 }
+      : { emp_id: raw, is_active: 1 };
+    const user = await User.findOne(query).lean();
 
     // Account lockout check
     if (user && user.login_locked_until && new Date(user.login_locked_until) > new Date()) {
