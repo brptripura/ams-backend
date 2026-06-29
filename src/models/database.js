@@ -42,9 +42,11 @@ const userSchema = new mongoose.Schema({
   // ── Account lockout ─────────────────────────────────────────────────
   failed_login_attempts: { type: Number, default: 0 },
   login_locked_until:    { type: Date, default: null },
-// ── Profile Photo (uploaded once, locked) ─────────────────────────────────
-profile_photo_path:     { type: String, default: null },   // Cloudinary URL
-profile_photo_uploaded: { type: Date,   default: null },   // when it was uploaded
+// ── Profile Photo ─────────────────────────────────────────────────────────
+profile_photo_path:      { type: String, default: null },  // Cloudinary URL
+profile_photo_uploaded:  { type: Date,   default: null },  // when first uploaded
+photo_update_quota:      { type: Number, default: null },  // null=locked, 0=unlimited, N=allowed N updates
+photo_update_count:      { type: Number, default: 0    },  // how many updates used so far
   // Legacy single-scan fields kept for backwards compat
   scan_paper_path:     { type: String, default: null },
   scan_paper_uploaded: { type: String, default: null },

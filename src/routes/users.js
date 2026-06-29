@@ -365,33 +365,49 @@ router.put('/:id', authenticate, authorize('admin', 'super_admin'), async (req, 
     if (req.user.role === 'admin' && ['admin', 'super_admin'].includes(user.role))
       return res.status(403).json({ success: false, message: 'Admins cannot modify admin or super admin accounts' });
     
-    const { name, email, role, department, managerId, hrId,phone, isActive, assignedBlock, assignedDistrict, roleType, designation } = req.body;
-    
+    const { name, email, role, department, managerId, hrId, phone, isActive, assignedBlock, assignedDistrict, roleType, designation, photoUpdateQuota } = req.body;
+
     if (req.user.role === 'admin' && role && ['admin', 'super_admin'].includes(role))
       return res.status(403).json({ success: false, message: 'Admins cannot assign admin or super admin roles' });
-    
+
     const newManagerId = managerId !== undefined ? (managerId || null) : user.manager_id;
     const newBlock     = assignedBlock !== undefined ? (assignedBlock || null) : user.assigned_block;
     const newDistrict  = assignedDistrict !== undefined ? (assignedDistrict || null) : user.assigned_district;
     const newIsActive  = isActive !== undefined ? isActive : user.is_active;
-    
-    // ── FIX 1B: Include roleType and designation in update ──
-    const update = { 
-      name: name || user.name, 
-      email: email || user.email, 
-      role: role || user.role, 
-      department: department || user.department, 
-      manager_id: newManagerId, 
+
+    const update = {
+      name: name || user.name,
+      email: email || user.email,
+      role: role || user.role,
+      department: department || user.department,
+      manager_id: newManagerId,
       hr_id: hrId !== undefined ? (hrId || null) : (user.hr_id || null),
-      phone: phone !== undefined ? (phone || null) : user.phone, 
-      is_active: newIsActive, 
-      assigned_block: newBlock, 
+      phone: phone !== undefined ? (phone || null) : user.phone,
+      is_active: newIsActive,
+      assigned_block: newBlock,
       assigned_district: newDistrict,
-     role_type: (roleType !== undefined && roleType !== null) ? roleType : user.role_type,        // ← FIX
-      designation: designation !== undefined ? (designation || null) : user.designation  // ← FIX
+      role_type: (roleType !== undefined && roleType !== null) ? roleType : user.role_type,
+      designation: designation !== undefined ? (designation || null) : user.designation,
     };
-    
-    await User.findByIdAndUpdate(req.params.id, { $set: update });
+
+    // If admin is granting a new photo quota, store it and reset the counter
+    const quotaChanged = photoUpdateQuota !== undefined;
+    if (quotaChanged) {
+      update.photo_update_quota = photoUpdateQuota === null ? null : Number(photoUpdateQuota);
+      update.photo_update_count = 0;
+    }
+
+    await User.findByIdAndUpdate(req.params.id, { $set: update }, { strict: false });
+
+    // Notify user if photo access was granted (quota is not locked)
+    if (quotaChanged && photoUpdateQuota !== null) {
+      await Notification.create({
+        _id: uuidv4(), user_id: req.params.id,
+        title: 'Profile Photo Update Approved',
+        message: 'Your profile photo update request has been approved. You can now update your photo from your Profile page.',
+        type: 'info', is_read: false,
+      }).catch(() => {});
+    }
     
     const targetRole = role || user.role;
     if (targetRole === 'employee') {
@@ -668,41 +684,55 @@ router.post(
         return res.status(400).json({ success: false, message: 'No photo provided' });
       }
  
-      const user = await User.findById(req.user.id).select('profile_photo_path profile_photo_uploaded role').lean();
+      const user = await User.findById(req.user.id)
+        .select('profile_photo_path profile_photo_uploaded role photo_update_quota photo_update_count')
+        .lean();
 
-      if (user?.profile_photo_path) {
-        return res.status(409).json({
-          success: false,
-          message: 'Profile photo already uploaded. Raise a request through the app to update it.',
-          locked:  true,
-        });
+      const isAdminRole  = ['admin', 'super_admin'].includes(req.user.role);
+      const isFirstUpload = !user?.profile_photo_path;
+
+      if (!isFirstUpload && !isAdminRole) {
+        // Quota check: null = locked, 0 = unlimited, N = allow N updates
+        const quota = user?.photo_update_quota ?? null;
+        const used  = user?.photo_update_count  ?? 0;
+        if (quota === null || (quota > 0 && used >= quota)) {
+          return res.status(409).json({
+            success: false,
+            message: 'Profile photo update not permitted. Please raise a request to update your photo.',
+            locked:  true,
+          });
+        }
       }
- 
+
       const photoPath = await uploadFile(
         req.file.buffer,
         `ams/users/${req.user.emp_id || req.user.id}/profile`,
         req.file.originalname,
         req.file.mimetype,
       );
- 
-      await User.findByIdAndUpdate(req.user.id, {
-        $set: {
-          profile_photo_path:     photoPath,
-          profile_photo_uploaded: new Date(),
-          face_enrolled:          true,   // mark face as enrolled for attendance gating
-        },
-      }, { strict: false });
- 
+
+      const updateFields = {
+        profile_photo_path:     photoPath,
+        profile_photo_uploaded: new Date(),
+        face_enrolled:          true,
+      };
+      // Increment usage counter for non-admin updates (not the first upload)
+      if (!isFirstUpload && !isAdminRole) {
+        updateFields.photo_update_count = (user?.photo_update_count ?? 0) + 1;
+      }
+
+      await User.findByIdAndUpdate(req.user.id, { $set: updateFields }, { strict: false });
+
       await AuditLog.create({
         _id: uuidv4(), user_id: req.user.id,
         action: 'PROFILE_PHOTO_UPLOAD',
         entity_type: 'user', entity_id: req.user.id,
-        new_value: isUpdate ? 'Profile photo updated' : 'Profile photo enrolled',
+        new_value: isFirstUpload ? 'Profile photo enrolled' : 'Profile photo updated',
       });
 
       res.status(201).json({
         success:  true,
-        message:  isUpdate ? 'Profile photo updated successfully.' : 'Profile photo uploaded successfully.',
+        message:  isFirstUpload ? 'Profile photo uploaded successfully.' : 'Profile photo updated successfully.',
         photoPath,
       });
     } catch (err) {
@@ -723,14 +753,22 @@ router.delete(
       await User.findByIdAndUpdate(req.params.id, {
         $set: { profile_photo_path: null, profile_photo_uploaded: null, face_enrolled: false },
       }, { strict: false });
- 
+
       await AuditLog.create({
         _id: uuidv4(), user_id: req.user.id,
         action: 'PROFILE_PHOTO_RESET',
         entity_type: 'user', entity_id: req.params.id,
         new_value: 'Profile photo reset by admin',
       });
- 
+
+      // Notify the user so they know they can now upload a new photo
+      await Notification.create({
+        _id: uuidv4(), user_id: req.params.id,
+        title: 'Profile Photo Update Approved',
+        message: 'Your profile photo update request has been approved. You can now upload a new photo from your Profile page.',
+        type: 'info', is_read: false,
+      }).catch(() => {});
+
       res.json({ success: true, message: 'Profile photo reset. Employee may now re-enroll.' });
     } catch (err) {
       console.error('[ProfilePhotoReset]', err);
@@ -793,9 +831,11 @@ function formatUser(u) {
     scan_paper_path:     u.scan_paper_path     || null,
     scan_paper_uploaded: u.scan_paper_uploaded || null,
     face_enrolled:       u.face_enrolled          || false,
-    faceEnrolled:        u.face_enrolled          || false,
-    facePhotoUrl:        u.profile_photo_path     || null,
-    profile_photo_uploaded: u.profile_photo_uploaded || null,
+    faceEnrolled:           u.face_enrolled           || false,
+    facePhotoUrl:           u.profile_photo_path      || null,
+    profile_photo_uploaded: u.profile_photo_uploaded  || null,
+    photoUpdateQuota:       u.photo_update_quota       ?? null,
+    photoUpdateCount:       u.photo_update_count       ?? 0,
   };
 }
 

@@ -300,11 +300,13 @@ router.get('/me', authenticate, async (req, res) => {
       phone:            u.phone,
       emailVerified:    u.email_verified   || false,
       phoneVerified:    u.phone_verified   || false,
-       faceEnrolled:     u.face_enrolled    || false,  // ← add
-   facePhotoUrl:     u.profile_photo_path || null, // ← add
-      createdAt:        u.created_at,
-      assignedBlock:    u.assigned_block,
-      assignedDistrict: u.assigned_district,
+      faceEnrolled:       u.face_enrolled        || false,
+      facePhotoUrl:       u.profile_photo_path   || null,
+      photoUpdateQuota:   u.photo_update_quota    ?? null,
+      photoUpdateCount:   u.photo_update_count    ?? 0,
+      createdAt:          u.created_at,
+      assignedBlock:      u.assigned_block,
+      assignedDistrict:   u.assigned_district,
     }});
   } catch (err) {
     console.error(err);
