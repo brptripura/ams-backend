@@ -157,10 +157,11 @@ router.post('/login', loginLimiter, [
   body('password').notEmpty(),
 ], validate, async (req, res) => {
   try {
+    const { password } = req.body;
     const raw = req.body.email.trim();
     // If input looks like an email, search by email; otherwise search by emp_id
-    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw);
-    const query = isEmail
+    const isEmailInput = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw);
+    const query = isEmailInput
       ? { email: raw.toLowerCase(), is_active: 1 }
       : { emp_id: raw, is_active: 1 };
     const user = await User.findOne(query).lean();
@@ -175,15 +176,15 @@ router.post('/login', loginLimiter, [
     // If MongoDB password fails, try Firebase Auth (first-time setup only — skip if user already
     // changed password via the app, to prevent Firebase from overwriting the new hash).
     if (!passwordValid && user && FIREBASE_API_KEY && !user.pwd_changed_at) {
-      const firebaseOk = await verifyWithFirebase(email, password);
+      const firebaseOk = await verifyWithFirebase(user.email, password);
       if (firebaseOk) {
         // Password valid in Firebase — sync back to MongoDB + auto-verify email
-        console.log(`[Auth] Firebase password sync for: ${email}`);
+        console.log(`[Auth] Firebase password sync for: ${user.email}`);
         const syncUpdate = { password_hash: bcrypt.hashSync(password, 12) };
         // If user set password via Firebase, they proved email ownership = verified
         if (!user.email_verified) {
           syncUpdate.email_verified = true;
-          console.log(`[Auth] Auto-verified email for: ${email}`);
+          console.log(`[Auth] Auto-verified email for: ${user.email}`);
         }
         await User.findByIdAndUpdate(user._id, { $set: syncUpdate });
         passwordValid = true;
