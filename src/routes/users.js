@@ -155,14 +155,14 @@ router.get('/bulk-upload/template', authenticate, authorize('super_admin', 'admi
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Users Template');
     const templateData = [
-      ['name', 'email', 'empId', 'password', 'role', 'roleType', 'designation', 'department', 'managerId', 'phone', 'assignedBlock', 'assignedDistrict'],
-      ['Manager One',  'manager1@brp.com', 'MGR001', 'R@m%Brp@26', 'manager',  'BRP', '', 'Engineering',    '',       '9876500001', 'Agartala', 'West Tripura'],
-      ['HR One',       'hr1@brp.com',      'HR001',  'R@m%Brp@26', 'hr',       'URP', '', 'HR',             '',       '9876500010', 'Agartala', 'West Tripura'],
-      ['Admin One',    'admin1@brp.com',   'ADM001', 'R@m%Brp@26', 'admin',    '',    '', 'Administration', '',       '9876500020', 'Agartala', 'West Tripura'],
-      ['Rajesh Kumar', 'rajesh@brp.com',   'EMP001', 'R@m%Brp@26', 'employee', 'BRP', '', 'Engineering',    'MGR001', '9876543210', 'Agartala', 'West Tripura'],
+      ['name', 'email', 'empId', 'password', 'role', 'roleType', 'designation', 'department', 'managerId', 'phone', 'assignedBlock', 'assignedDistrict', 'joiningDate'],
+      ['Manager One',  'manager1@brp.com', 'MGR001', 'R@m%Brp@26', 'manager',  'BRP',     '', 'Engineering',    '',       '9876500001', 'Agartala', 'West Tripura', '2024-01-01'],
+      ['HR One',       'hr1@brp.com',      'HR001',  'R@m%Brp@26', 'hr',       'HR',      '', 'HR',             '',       '9876500010', 'Agartala', 'West Tripura', '2024-01-01'],
+      ['Admin One',    'admin1@brp.com',   'ADM001', 'R@m%Brp@26', 'admin',    '',        '', 'Administration', '',       '9876500020', 'Agartala', 'West Tripura', '2024-01-01'],
+      ['Rajesh Kumar', 'rajesh@brp.com',   'EMP001', 'R@m%Brp@26', 'employee', 'ULB BRP', '', 'Engineering',    'MGR001', '9876543210', 'Agartala', 'West Tripura', '2024-06-15'],
     ];
     templateData.forEach(row => ws.addRow(row));
-    [16,22,10,12,12,10,14,16,14,13,14,16].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+    [16,22,10,12,12,10,14,16,14,13,14,16,14].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
 
     const rules = wb.addWorksheet('Rules');
     [
@@ -170,7 +170,7 @@ router.get('/bulk-upload/template', authenticate, authorize('super_admin', 'admi
       ['name','YES','Full name'],['email','YES','Valid unique email'],
       ['empId','YES','Unique employee ID'],['password','YES*','Min 6 chars. Required for new users only.'],
       ['role','YES','employee, manager, admin, hr, super_admin'],
-      ['roleType','NO','BRP or URP (for employees)'],
+      ['roleType','NO','BRP, ULB BRP, HR, or Legal'],['joiningDate','NO','YYYY-MM-DD format (e.g. 2024-06-15)'],
       ['designation','NO','Job title'],
       ['department','YES','Department name'],
       ['managerId','NO','Manager emp_id OR full name'],['phone','NO','10-digit mobile'],
@@ -216,7 +216,7 @@ router.post('/', authenticate, authorize('admin', 'super_admin'), [
   body('department').notEmpty().withMessage('Department is required'),
 ], validate, async (req, res) => {
   try {
-    const { name, email, empId, role, department, managerId, hrId,phone, assignedBlock, assignedDistrict, roleType, designation } = req.body;
+    const { name, email, empId, role, department, managerId, hrId, phone, assignedBlock, assignedDistrict, roleType, designation, joiningDate, officeName, reportingOfficerName, reportingOfficerDesignation } = req.body;
     
     if (req.user.role === 'admin' && ['admin', 'super_admin'].includes(role))
       return res.status(403).json({ success: false, message: 'Admins cannot create admin or super admin accounts' });
@@ -253,6 +253,10 @@ router.post('/', authenticate, authorize('admin', 'super_admin'), [
       assigned_district: assignedDistrict || null,
       role_type: roleType || null,        // ← FIX: Save roleType
       designation: designation || null,    // ← FIX: Save designation
+      joining_date:                  joiningDate                  || null,
+      office_name:                   officeName                   || null,
+      reporting_officer_name:        reportingOfficerName        || null,
+      reporting_officer_designation: reportingOfficerDesignation || null,
       email_verified: false,
       email_verify_token: hashedVerifyTok, 
       email_verify_expires: new Date(Date.now() + 86400000),
@@ -267,7 +271,7 @@ router.post('/', authenticate, authorize('admin', 'super_admin'), [
 
     sendMail(
       email,
-      '[BRP AMS] Your Account is Ready — Set Your Password',
+      'BRP Attendance System - Your Account is Ready',
       `<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
 <body style="margin:0;padding:0;background:#f2f6f8;font-family:Arial,sans-serif;">
 <table width="100%" cellpadding="0" cellspacing="0" style="background:#f2f6f8;padding:40px 0;">
@@ -335,7 +339,7 @@ router.put('/:id/reset-password', authenticate, authorize('admin', 'super_admin'
     const FRONTEND = process.env.FRONTEND_URL || 'https://monitermark.brptripura.com';
     const resetUrl = `${FRONTEND}/reset-password?token=${rawResetToken}`;
     
-    await sendMail(target.email, '[BRP AMS] Password Reset — Set Your New Password',
+    await sendMail(target.email, 'BRP Attendance System - Set Your New Password',
       `<p>Hi ${target.name}, your password was reset by an admin. <a href="${resetUrl}">Set new password</a> (expires in 30 minutes).</p>`);
     
     try { 
@@ -357,15 +361,34 @@ router.put('/:id/reset-password', authenticate, authorize('admin', 'super_admin'
 });
 
 // ── PUT /api/users/:id ────────────────────────────────────────────────────
-router.put('/:id', authenticate, authorize('admin', 'super_admin'), async (req, res) => {
+// Employees can update their own self-service fields; admins/super_admins can update anyone
+router.put('/:id', authenticate, async (req, res) => {
   try {
+    const isSelf      = String(req.params.id) === String(req.user.id);
+    const isAdminUser = ['admin', 'super_admin'].includes(req.user.role);
+
+    // Non-admins can only update their own profile, and only self-service fields
+    if (!isAdminUser && !isSelf)
+      return res.status(403).json({ success: false, message: 'Insufficient permissions' });
+
     const user = await User.findById(req.params.id).select('-password_hash -email_verify_token -pwd_reset_token -phone_otp -login_attempts -login_locked_until').lean();
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-    
+
     if (req.user.role === 'admin' && ['admin', 'super_admin'].includes(user.role))
       return res.status(403).json({ success: false, message: 'Admins cannot modify admin or super admin accounts' });
-    
-    const { name, email, role, department, managerId, hrId, phone, isActive, assignedBlock, assignedDistrict, roleType, designation, photoUpdateQuota } = req.body;
+
+    const { name, email, role, department, managerId, hrId, phone, isActive, assignedBlock, assignedDistrict, roleType, designation, photoUpdateQuota, joiningDate, officeName, reportingOfficerName, reportingOfficerDesignation } = req.body;
+
+    // Self-update: only allow safe personal fields, ignore admin-only fields
+    if (!isAdminUser && isSelf) {
+      const selfUpdate = {};
+      if (phone              !== undefined) selfUpdate.phone                          = phone              || null;
+      if (joiningDate        !== undefined) selfUpdate.joining_date                   = joiningDate        || null;
+      if (reportingOfficerName        !== undefined) selfUpdate.reporting_officer_name        = reportingOfficerName        || null;
+      if (reportingOfficerDesignation !== undefined) selfUpdate.reporting_officer_designation = reportingOfficerDesignation || null;
+      const updated = await User.findByIdAndUpdate(req.params.id, { $set: selfUpdate }, { new: true }).lean();
+      return res.json({ success: true, user: formatUser(updated) });
+    }
 
     if (req.user.role === 'admin' && role && ['admin', 'super_admin'].includes(role))
       return res.status(403).json({ success: false, message: 'Admins cannot assign admin or super admin roles' });
@@ -388,6 +411,10 @@ router.put('/:id', authenticate, authorize('admin', 'super_admin'), async (req, 
       assigned_district: newDistrict,
       role_type: (roleType !== undefined && roleType !== null) ? roleType : user.role_type,
       designation: designation !== undefined ? (designation || null) : user.designation,
+      joining_date:                  joiningDate                  !== undefined ? (joiningDate                  || null) : user.joining_date,
+      office_name:                   officeName                   !== undefined ? (officeName                   || null) : user.office_name,
+      reporting_officer_name:        reportingOfficerName        !== undefined ? (reportingOfficerName        || null) : user.reporting_officer_name,
+      reporting_officer_designation: reportingOfficerDesignation !== undefined ? (reportingOfficerDesignation || null) : user.reporting_officer_designation,
     };
 
     // If admin is granting a new photo quota, store it and reset the counter
@@ -519,7 +546,7 @@ router.post('/request-assignment', authenticate, authorize('employee'), [
     }
     
     for (const admin of admins) {
-      sendMail(admin.email, `[BRP AMS] ${title} — ${emp.name}`, `<p>${message}</p><p>Log in to Admin → Users to assign.</p>`);
+      sendMail(admin.email, `BRP Attendance System - ${title}: ${emp.name}`, `<p>${message}</p><p>Log in to Admin → Users to assign.</p>`);
     }
     
     res.json({ success: true, message: `Request sent to admin${admins.length > 1 ? 's' : ''}.` });
@@ -554,7 +581,7 @@ router.post('/request-location-change', authenticate, authorize('employee'), [
     }
     
     for (const admin of admins) {
-      sendMail(admin.email, `[BRP AMS] ${title} — ${emp.name}`, `<p>${message}</p>`);
+      sendMail(admin.email, `BRP Attendance System - ${title}: ${emp.name}`, `<p>${message}</p>`);
     }
     
     res.json({ success: true, message: 'Location change request sent to admin.' });
@@ -597,6 +624,7 @@ router.post('/bulk-upload', authenticate, authorize('super_admin', 'admin'), upl
 const district = String(row['assignedDistrict'] || row['District'] || row['district'] || '').trim() || null;
       const roleType = String(row['RoleType'] || row['roleType'] || '').trim() || null;  // ← FIX: Support roleType
       const designation = String(row['Designation'] || row['designation'] || '').trim() || null;  // ← FIX: Support designation
+      const joiningDate = String(row['joiningDate'] || row['JoiningDate'] || row['joining_date'] || '').trim() || null;
       const managerRef = String(row['managerId'] || row['ManagerId'] || row['Manager Name'] || row['manager_name'] || row['ManagerName'] || row['manager_id'] || '').trim() || null;
       
       if (!empId || !name || !email || !dept) { 
@@ -632,7 +660,8 @@ const district = String(row['assignedDistrict'] || row['District'] || row['distr
           assigned_block: block, 
           assigned_district: district,
           role_type: roleType,           // ← FIX: Support update
-          designation: designation        // ← FIX: Support update
+          designation: designation,       // ← FIX: Support update
+          joining_date: joiningDate
         };
         if (password && password.length >= 6) update.password_hash = bcrypt.hashSync(password, 10);
         await User.findByIdAndUpdate(existing._id, { $set: update });
@@ -657,6 +686,7 @@ const district = String(row['assignedDistrict'] || row['District'] || row['distr
           assigned_district: district,
           role_type: roleType,           // ← FIX: Support creation
           designation: designation,       // ← FIX: Support creation
+          joining_date: joiningDate,
           is_active: 1, 
           email_verified: true, 
           phone_verified: true 
@@ -812,6 +842,10 @@ function formatUser(u) {
     role:             u.role,
     roleType:         u.role_type || null,      // ← FIX: Include roleType
     designation:      u.designation || null,     // ← FIX: Include designation
+    joiningDate:                  u.joining_date                  || null,
+    officeName:                   u.office_name                   || null,
+    reportingOfficerName:        u.reporting_officer_name        || null,
+    reportingOfficerDesignation: u.reporting_officer_designation || null,
     department:       u.department,
     managerId:        u.manager_id,
     hrId:             u.hr_id     || null,

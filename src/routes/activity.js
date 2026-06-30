@@ -6,7 +6,7 @@ const { v4: uuidv4 } = require('uuid');
 const { uploadFile } = require('../utils/storage');
 const { query, body, validationResult } = require('express-validator');
 const ExcelJS = require('exceljs');
-const { Activity, ActivityDocument, User } = require('../models/database');
+const { Activity, ActivityDocument, User, AttendanceRecord } = require('../models/database');
 const { authenticate, authorize } = require('../middleware/auth');
 
 const upload = multer({
@@ -281,6 +281,63 @@ router.get('/stats/block-wise', authenticate, authorize('admin', 'manager', 'hr'
       { $sort: { total: -1 } },
     ]);
     res.json({ success: true, data: rows, start, end });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ── GET /api/activity/stats/my ────────────────────────────────────────
+// Returns activity stats for the logged-in user for a given date range.
+// Used by the profile page for current-month and all-time toggles.
+router.get('/stats/my', authenticate, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    if (!startDate || !endDate)
+      return res.status(400).json({ success: false, message: 'startDate and endDate required' });
+
+    const userId = String(req.user.id);
+    const empId  = req.user.emp_id;
+
+    // Activity records in range (support both uuid _id and legacy emp_id in user_id field)
+    const actIds = [userId, empId].filter(Boolean);
+    const actMatch = {
+      user_id:       actIds.length === 1 ? actIds[0] : { $in: actIds },
+      activity_date: { $gte: startDate, $lte: endDate },
+    };
+
+    // Total activity records submitted
+    const totalActivities = await Activity.countDocuments(actMatch);
+
+    // Unique days that have at least one activity
+    const daysWithAct = await Activity.aggregate([
+      { $match: actMatch },
+      { $group: { _id: '$activity_date' } },
+      { $count: 'total' },
+    ]);
+    const completedDays = daysWithAct[0]?.total || 0;
+
+    // Attendance days (days with a check-in) in range
+    const attMatch = {
+      emp_id:       empId || userId,
+      date:         { $gte: startDate, $lte: endDate },
+      checkin_time: { $exists: true, $ne: null },
+    };
+    const workingDays = await AttendanceRecord.countDocuments(attMatch);
+
+    const pendingDays  = Math.max(0, workingDays - completedDays);
+    const performance  = workingDays > 0 ? Math.round((completedDays / workingDays) * 100) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        completed:       completedDays,
+        totalActivities,
+        pending:         pendingDays,
+        workingDays,
+        performance:     `${performance}%`,
+      },
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: 'Server error' });

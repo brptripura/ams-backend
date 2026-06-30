@@ -9,6 +9,7 @@ const rateLimit  = require('express-rate-limit');
 const { User, AuditLog, RevokedToken } = require('../models/database');
 const { authenticate } = require('../middleware/auth');
 const { sendMail } = require('../utils/mailer');
+const { sendSMS, mode: smsMode } = require('../utils/sms');
 
 // ── Secure token helpers ──────────────────────────────────────────────────
 const generateToken = () => crypto.randomBytes(32).toString('hex');           // 64-char hex
@@ -311,8 +312,12 @@ router.get('/me', authenticate, async (req, res) => {
       photoUpdateQuota:   u.photo_update_quota    ?? null,
       photoUpdateCount:   u.photo_update_count    ?? 0,
       createdAt:          u.created_at,
-      assignedBlock:      u.assigned_block,
-      assignedDistrict:   u.assigned_district,
+      assignedBlock:               u.assigned_block,
+      assignedDistrict:            u.assigned_district,
+      joiningDate:                 u.joining_date                  || null,
+      reportingOfficerName:        u.reporting_officer_name        || null,
+      reportingOfficerDesignation: u.reporting_officer_designation || null,
+      isActive:                    u.is_active,
     }});
   } catch (err) {
     console.error(err);
@@ -375,7 +380,7 @@ router.post('/forgot-password', forgotLimiter, [
 
     const FRONTEND = process.env.FRONTEND_URL || 'https://monitermark.brptripura.com';
     const resetUrl = `${FRONTEND}/reset-password?token=${rawToken}`;
-    await sendMail(user.email, '[BRP AMS] Reset Your Password',
+    await sendMail(user.email, 'BRP Attendance System - Reset Your Password',
       emailLayout('Password Reset Request', `
         <p style="color:#475569;font-size:14px;line-height:1.6;">
           Hi <strong>${user.name}</strong>, we received a request to reset your AMS password.
@@ -435,7 +440,7 @@ router.post('/reset-password-otp', otpLimiter, [
       $set: { pwd_reset_otp: hashedOtp, pwd_reset_otp_expires: expires }
     });
 
-    await sendMail(user.email, '[BRP AMS] Password Reset OTP',
+    await sendMail(user.email, 'BRP Attendance System - Password Reset Code',
       emailLayout('Password Reset Verification Code', `
         <p style="color:#475569;font-size:14px;line-height:1.6;">
           Hi <strong>${user.name}</strong>, enter this code to verify your identity before resetting your password.
@@ -493,7 +498,7 @@ router.post('/reset-password', [
     await AuditLog.create({ _id: uuidv4(), user_id: user._id, action: 'RESET_PASSWORD', ip_address: req.ip });
 
     // Password changed notification — fire-and-forget
-    sendMail(user.email, '[BRP AMS] Password Changed',
+    sendMail(user.email, 'BRP Attendance System - Password Changed',
       emailLayout('Password Changed Successfully', `
         <p style="color:#475569;font-size:14px;line-height:1.6;">
           Hi <strong>${user.name}</strong>, your AMS password was changed successfully.
@@ -591,7 +596,7 @@ router.post('/resend-verification', authenticate, async (req, res) => {
 
     const BACKEND = process.env.BACKEND_URL || 'https://ams-backend-3it1.onrender.com/api';
     const verifyUrl = `${BACKEND}/api/auth/verify-email/${rawToken}`;
-    await sendMail(user.email, '[BRP AMS] Verify Your Email',
+    await sendMail(user.email, 'BRP Attendance System - Verify Your Email',
       emailLayout('Verify Your Email Address', `
         <p style="color:#475569;font-size:14px;line-height:1.6;">
           Hi <strong>${user.name}</strong>, please verify your email address by clicking below.
@@ -615,8 +620,7 @@ router.post('/resend-verification', authenticate, async (req, res) => {
 });
 
 // ── POST /api/auth/send-phone-otp ─────────────────────────────────────────
-// Sends a 6-digit OTP to the user's registered email
-// (Replace sendMail with Twilio SMS when you add a SIM/Twilio account)
+// Sends OTP via SMS to the user's phone number (email fallback if no SMS provider)
 router.post('/send-phone-otp', otpLimiter, authenticate, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).lean();
@@ -624,31 +628,46 @@ router.post('/send-phone-otp', otpLimiter, authenticate, async (req, res) => {
     if (!user.phone)  return res.status(400).json({ success: false, message: 'No phone on your account. Update your profile first.' });
     if (user.phone_verified) return res.json({ success: true, message: 'Phone already verified' });
 
-    const otp       = generateOTP();
-    const hashed    = hashToken(otp);
-    const expires   = new Date(Date.now() + 10 * 60 * 1000); // 10 min
+    const otp     = generateOTP();
+    const hashed  = hashToken(otp);
+    const expires = new Date(Date.now() + 10 * 60 * 1000); // 10 min
 
     await User.findByIdAndUpdate(user._id, {
       $set: { phone_otp: hashed, phone_otp_expires: expires }
     });
 
-    await sendMail(user.email, '[BRP AMS] Your Verification Code',
-      emailLayout('Phone Verification Code', `
-        <p style="color:#475569;font-size:14px;line-height:1.6;">
-          Hi <strong>${user.name}</strong>, your verification code for phone number <strong>${user.phone}</strong> is:
-        </p>
-        <div style="text-align:center;margin:28px 0;">
-          <span style="font-size:42px;font-weight:900;letter-spacing:14px;color:#0b1e3b;">${otp}</span>
-        </div>
-        <p style="color:#475569;font-size:13px;text-align:center;">
-          This code expires in <strong>10 minutes</strong>.
-        </p>
-        <p style="color:#dc2626;font-size:12px;">Never share this code with anyone.</p>
-      `),
-      { type: 'VERIFY_EMAIL' }
-    );
+    // ── Try SMS first (preferred) ──────────────────────────────────────────
+    let sentViaSMS = false;
+    if (smsMode !== 'none') {
+      try {
+        await sendSMS(user.phone, otp);
+        sentViaSMS = true;
+      } catch (smsErr) {
+        console.error('[PhoneOTP] SMS failed, falling back to email:', smsErr.message);
+      }
+    }
 
-    res.json({ success: true, message: 'OTP sent to your registered email' });
+    // ── Email fallback ─────────────────────────────────────────────────────
+    if (!sentViaSMS) {
+      await sendMail(user.email, 'BRP Attendance System - Phone Verification Code',
+        emailLayout('Phone Verification Code', `
+          <p style="color:#475569;font-size:14px;line-height:1.6;">
+            Hi <strong>${user.name}</strong>, your verification code for phone number <strong>${user.phone}</strong> is:
+          </p>
+          <div style="text-align:center;margin:28px 0;">
+            <span style="font-size:42px;font-weight:900;letter-spacing:14px;color:#0b1e3b;">${otp}</span>
+          </div>
+          <p style="color:#475569;font-size:13px;text-align:center;">
+            This code expires in <strong>10 minutes</strong>.
+          </p>
+          <p style="color:#dc2626;font-size:12px;">Never share this code with anyone.</p>
+        `),
+        { type: 'VERIFY_EMAIL' }
+      );
+    }
+
+    const channel = sentViaSMS ? `SMS to +91-${user.phone}` : 'your registered email';
+    res.json({ success: true, message: `OTP sent via ${channel}`, channel: sentViaSMS ? 'sms' : 'email' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: 'Server error' });

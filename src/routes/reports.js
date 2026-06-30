@@ -287,23 +287,19 @@ router.get('/export',
     if (!employees.length)
       return res.status(404).json({success:false,message:'No employees found'});
 
-    // ── Manager name for signature ─────────────────────────────────────────────
-    let managerName = '';
-    if (role === 'manager') {
-      const mgr = await User.findById(req.user.id).select('name').lean();
-      managerName = mgr?.name || '';
-    } else if (role === 'employee') {
-      const emp = await User.findById(req.user.id).select('manager_id').lean();
-      if (emp?.manager_id) {
-        const mgr = await User.findById(emp.manager_id).select('name').lean();
-        managerName = mgr?.name || '';
-      }
-    } else if (managerId && String(managerId).trim() !== '') {
-      // HR/super_admin filtered by a specific manager — show that manager's name
-      const mgr = await User.findById(toObjId(managerId)).select('name').lean();
-      managerName = mgr?.name || '';
+    // ── Signature: Reporting Officer (govt field officer) for employee reports ──
+    let roName = '';
+    let roDesignation = '';
+    if (role === 'employee') {
+      // Use the employee's own stored Reporting Officer (govt official)
+      const emp = await User.findById(req.user.id).select('reporting_officer_name reporting_officer_designation').lean();
+      roName        = emp?.reporting_officer_name        || '';
+      roDesignation = emp?.reporting_officer_designation || '';
     }
-    // admin/hr/super_admin without manager filter → no single manager; leave blank
+    // Compose label: "Designation. Name"
+    const mgrLabel = roName
+      ? (roDesignation ? `${roDesignation}. ${roName}` : roName)
+      : '';
 
     // ── Attendance records ─────────────────────────────────────────────────────
     const recFilter = {
@@ -543,11 +539,11 @@ router.get('/export',
           empSigCell.alignment={horizontal:'center',vertical:'bottom'};
           empSigCell.border={bottom:{style:'medium',color:{argb:'FF1F3864'}}};
 
-          ws.getCell(r,8).value='Manager Sign:';
+          ws.getCell(r,8).value='BRP Manager Sign:';
           ws.getCell(r,8).font={bold:true,size:15,name:'Calibri',color:{argb:'FF1F3864'}};
           mc(ws,r,12,r,13);
           const mgrSigCell=ws.getCell(r,12);
-          mgrSigCell.value=mgrName?`(${mgrName})`:'';
+          mgrSigCell.value=mgrName||'';
           mgrSigCell.font={italic:true,size:10,name:'Calibri',color:{argb:'FF555555'}};
           mgrSigCell.alignment={horizontal:'center',vertical:'bottom'};
           mgrSigCell.border={bottom:{style:'medium',color:{argb:'FF1F3864'}}};
@@ -569,14 +565,14 @@ router.get('/export',
       };
 
       if(role==='employee'){
-        buildSheet(wb.addWorksheet('My Attendance'),matrix,`${matrix[0]?.emp.name} Summary`,managerName,holCount);
+        buildSheet(wb.addWorksheet('My Attendance'),matrix,`${matrix[0]?.emp.name} Summary`,mgrLabel,holCount);
       } else {
         const allName =role==='manager'?'Team Report':'All emp Reports';
         const allTitle=role==='manager'?'Team Summary':'Total Summary';
-        buildSheet(wb.addWorksheet(allName),matrix,allTitle,managerName,holCount);
+        buildSheet(wb.addWorksheet(allName),matrix,allTitle,mgrLabel,holCount);
         matrix.forEach(({emp,cells})=>{
           const name=emp.name.replace(/[:\\/?*[\]]/g,'').substring(0,31);
-          buildSheet(wb.addWorksheet(name),[{emp,cells}],`${emp.name} Summary`,managerName,holCount);
+          buildSheet(wb.addWorksheet(name),[{emp,cells}],`${emp.name} Summary`,mgrLabel,holCount);
         });
       }
 
@@ -741,11 +737,11 @@ router.get('/export',
         doc.moveTo(ML+90,sy+12).lineTo(ML+90+sigLineW,sy+12).stroke('#1F3864');
 
         const mgrSigX=ML+90+sigLineW+60;
-        doc.fillColor('#1F3864').fontSize(16).font('Helvetica-Bold').text('Manager Sign:',mgrSigX,sy);
-        doc.moveTo(mgrSigX+90,sy+12).lineTo(mgrSigX+90+sigLineW,sy+12).stroke('#1F3864');
-        if(managerName){
-          doc.fillColor('#555').fontSize(20).font('Helvetica-Oblique')
-             .text(`(${managerName})`,mgrSigX+90,sy+14,{width:sigLineW,align:'center'});
+        doc.fillColor('#1F3864').fontSize(16).font('Helvetica-Bold').text('BRP Manager Sign:',mgrSigX,sy);
+        doc.moveTo(mgrSigX+130,sy+12).lineTo(mgrSigX+130+sigLineW,sy+12).stroke('#1F3864');
+        if(mgrLabel){
+          doc.fillColor('#555').fontSize(10).font('Helvetica-Oblique')
+             .text(mgrLabel,mgrSigX+130,sy+15,{width:sigLineW,align:'center'});
         }
       }
 

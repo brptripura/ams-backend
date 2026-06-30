@@ -51,6 +51,10 @@ photo_update_count:      { type: Number, default: 0    },  // how many updates u
   scan_paper_path:     { type: String, default: null },
   scan_paper_uploaded: { type: String, default: null },
   face_enrolled: { type: Boolean, default: false },
+  joining_date:                  { type: String, default: null },
+  office_name:                   { type: String, default: null },
+  reporting_officer_name:        { type: String, default: null },
+  reporting_officer_designation: { type: String, default: null },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 userSchema.index({ manager_id: 1 });
