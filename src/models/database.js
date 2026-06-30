@@ -136,7 +136,6 @@ const notificationSchema = new mongoose.Schema({
 
 notificationSchema.index({ user_id: 1 });
 notificationSchema.index({ user_id: 1, is_read: 1 });
-
 const auditLogSchema = new mongoose.Schema({
   _id:         { type: String },
   user_id:     { type: String, ref: 'User', required: true },
@@ -146,6 +145,18 @@ const auditLogSchema = new mongoose.Schema({
   old_value:   { type: String, default: null },
   new_value:   { type: String, default: null },
   ip_address:  { type: String, default: null },
+
+  // ── New: device + location context ──────────────────────────────
+  user_agent:  { type: String, default: null },   // raw UA string, kept for debugging
+  device_type: { type: String, default: null },   // 'mobile' | 'tablet' | 'desktop'
+  os:          { type: String, default: null },   // e.g. "Android 14", "Windows 10"
+  browser:     { type: String, default: null },   // e.g. "Chrome 124"
+  location: {
+    city:    { type: String, default: null },
+    region:  { type: String, default: null },
+    country: { type: String, default: null },
+    ll:      { type: [Number], default: null },   // [lat, lng], approximate
+  },
 }, { timestamps: { createdAt: 'created_at', updatedAt: false } });
 
 auditLogSchema.index({ entity_type: 1, entity_id: 1 });

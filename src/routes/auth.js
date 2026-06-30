@@ -14,7 +14,41 @@ const { sendMail } = require('../utils/mailer');
 const generateToken = () => crypto.randomBytes(32).toString('hex');           // 64-char hex
 const hashToken     = (t) => crypto.createHash('sha256').update(t).digest('hex');
 const generateOTP   = () => Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit
+const UAParser = require('ua-parser-js');
+const geoip    = require('geoip-lite');
 
+// ── Login context helper — device + approximate location from request ────
+function getLoginContext(req) {
+  const ua = req.headers['user-agent'] || '';
+  const parser = new UAParser(ua);
+  const device  = parser.getDevice();
+  const os      = parser.getOS();
+  const browser = parser.getBrowser();
+
+  // device.type is undefined for desktop in ua-parser-js — normalize it
+  const deviceType = device.type || 'desktop'; // 'mobile' | 'tablet' | 'desktop'
+
+  // Normalize IP: strip the ::ffff: prefix some proxies add, and treat
+  // localhost/private ranges as "no location available"
+  let ip = (req.ip || '').replace('::ffff:', '');
+  if (ip === '::1') ip = '127.0.0.1';
+
+  const geo = geoip.lookup(ip); // null for localhost / private IPs
+
+  return {
+    ip_address:  req.ip || null,
+    user_agent:  ua,
+    device_type: deviceType,
+    os:          [os.name, os.version].filter(Boolean).join(' ') || null,
+    browser:     [browser.name, browser.version].filter(Boolean).join(' ') || null,
+    location: geo ? {
+      city:    geo.city    || null,
+      region:  geo.region  || null,
+      country: geo.country || null,
+      ll:      geo.ll      || null,
+    } : null,
+  };
+}
 // ── Rate limiters ─────────────────────────────────────────────────────────
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false,
@@ -187,7 +221,18 @@ router.post('/login', loginLimiter, [
     if (!user || !passwordValid) {
       // Audit log for failed login
       if (user) {
-        await AuditLog.create({ _id: uuidv4(), user_id: user._id, action: 'LOGIN_FAILED', ip_address: req.ip });
+        const loginCtx = getLoginContext(req);
+        await AuditLog.create({
+          _id: uuidv4(),
+          user_id: user._id,
+          action: 'LOGIN_FAILED',
+          ip_address: loginCtx.ip_address,
+          user_agent: loginCtx.user_agent,
+          device_type: loginCtx.device_type,
+          os: loginCtx.os,
+          browser: loginCtx.browser,
+          location: loginCtx.location,
+        });
         const attempts = (user.failed_login_attempts || 0) + 1;
         const updateFields = { failed_login_attempts: attempts };
         if (attempts >= 5) {
@@ -207,7 +252,18 @@ router.post('/login', loginLimiter, [
       { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
     );
 
-    await AuditLog.create({ _id: uuidv4(), user_id: user._id, action: 'LOGIN', ip_address: req.ip });
+   const loginCtx = getLoginContext(req);
+    await AuditLog.create({
+      _id: uuidv4(),
+      user_id: user._id,
+      action: 'LOGIN',
+      ip_address: loginCtx.ip_address,
+      user_agent: loginCtx.user_agent,
+      device_type: loginCtx.device_type,
+      os: loginCtx.os,
+      browser: loginCtx.browser,
+      location: loginCtx.location,
+    });
 
     let managerName = null, managerEmail = null;
     if (user.manager_id) {
@@ -233,8 +289,8 @@ router.post('/login', loginLimiter, [
        hrId:             user.hr_id            || null,
         emailVerified:    user.email_verified   || false,
         phoneVerified:    user.phone_verified   || false,
-         faceEnrolled:     user.face_enrolled     || false,  // ← ADD THIS
-      facePhotoUrl:     user.profile_photo_path || null,  // ← ADD THIS
+         faceEnrolled:     user.face_enrolled     || false,  
+      facePhotoUrl:     user.profile_photo_path || null,  
         assignedBlock:    user.assigned_block,
         assignedDistrict: user.assigned_district,
       }
@@ -254,7 +310,18 @@ router.post('/logout', authenticate, async (req, res) => {
       { $setOnInsert: { _id: tokenHash, revoked_at: new Date() } },
       { upsert: true }
     );
-    await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'LOGOUT', ip_address: req.ip });
+   const loginCtx = getLoginContext(req);
+    await AuditLog.create({
+      _id: uuidv4(),
+      user_id: req.user.id,
+      action: 'LOGOUT',
+      ip_address: loginCtx.ip_address,
+      user_agent: loginCtx.user_agent,
+      device_type: loginCtx.device_type,
+      os: loginCtx.os,
+      browser: loginCtx.browser,
+      location: loginCtx.location,
+    });
     res.json({ success: true, message: 'Logged out successfully' });
   } catch (err) {
     console.error(err);

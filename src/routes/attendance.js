@@ -466,7 +466,7 @@ router.put('/:id/checkout', authenticate, authorize('employee'), upload.single('
     const isAutoApproved = hoursElapsed >= AUTO_APPROVE_HOURS;
 
     let leaveType = null;
-    if (hoursElapsed >= 9) {
+    if (hoursElapsed >= 7) {
       leaveType = null;               // Full day — no leave (whether auto-approved or pending)
     } else if (hoursElapsed >= 4) {
       leaveType = 'Half Day';
