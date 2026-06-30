@@ -246,11 +246,11 @@ cron.schedule('0 18-23 * * *', async () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CRON 3 — Every 15 min: Auto-checkout employees 9 hours after check-in
+// CRON 3 — Every 15 min: Auto-checkout employees after 9 hours OR at 23:59 IST
 //
-// Finds any Draft record with a check-in but no check-out where the current
-// time has passed (check-in time + 9 hours). Checks out at exactly the
-// 9-hour mark, marks Approved, and notifies the employee.
+// Whichever comes first:
+//   a) check-in time + 9 hours  (normal shift limit)
+//   b) 23:59 IST of the record's date  (EOD cutoff — day change safety net)
 // ─────────────────────────────────────────────────────────────────────────────
 cron.schedule('*/15 * * * *', async () => {
   try {
@@ -266,16 +266,26 @@ cron.schedule('*/15 * * * *', async () => {
 
     for (const record of unchecked) {
       const checkinDT      = new Date(`${record.date}T${record.checkin_time}:00+05:30`);
-      const autoCheckoutDT = new Date(checkinDT.getTime() + 9 * 3600 * 1000);
+      const nineHourDT     = new Date(checkinDT.getTime() + 9 * 3600 * 1000);
+      const eodDT          = new Date(`${record.date}T23:59:00+05:30`);
 
-      if (nowUTC < autoCheckoutDT) continue;
+      // Use whichever limit is earlier — 9-hour mark or EOD (23:59 IST)
+      const effectiveDT  = nineHourDT <= eodDT ? nineHourDT : eodDT;
+      const isEodTrigger = effectiveDT === eodDT;
+
+      if (nowUTC < effectiveDT) continue;
 
       // Format checkout time in IST as HH:MM
-      const checkoutTime = autoCheckoutDT.toLocaleTimeString('en-CA', {
+      const checkoutTime = effectiveDT.toLocaleTimeString('en-CA', {
         timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false,
       });
-      const workedHours = 9;
+      const workedMs    = effectiveDT.getTime() - checkinDT.getTime();
+      const workedHours = Math.round(workedMs / 3600000 * 10) / 10;
       const now         = new Date();
+
+      const remark = isEodTrigger
+        ? `Auto-checked out at end of day 23:59 (check-in: ${record.checkin_time}, checkout: ${checkoutTime})`
+        : `Auto-checked out after 9 hours (check-in: ${record.checkin_time}, checkout: ${checkoutTime})`;
 
       await AttendanceRecord.findByIdAndUpdate(record._id, {
         $set: {
@@ -284,7 +294,7 @@ cron.schedule('*/15 * * * *', async () => {
           is_auto_checkout: true,
           status:           'Approved',
           actioned_at:      now,
-          manager_remark:   `Auto-checked out after 9 hours (check-in: ${record.checkin_time}, checkout: ${checkoutTime})`,
+          manager_remark:   remark,
           submitted_at:     now,
         },
       });
@@ -292,14 +302,16 @@ cron.schedule('*/15 * * * *', async () => {
       await Notification.create({
         _id:               uuidv4(),
         user_id:           record.emp_id,
-        title:             '🕗 Auto Check-Out (9 Hours)',
-        message:           `You were automatically checked out at ${checkoutTime} after 9 hours on duty.`,
+        title:             isEodTrigger ? '🌙 Auto Check-Out (End of Day)' : '🕗 Auto Check-Out (9 Hours)',
+        message:           isEodTrigger
+          ? `You were automatically checked out at 23:59 (end of day). Worked ${workedHours}h.`
+          : `You were automatically checked out at ${checkoutTime} after 9 hours on duty.`,
         type:              'info',
         related_record_id: record._id,
         link:              '/employee/history',
       });
 
-      console.log(`[AutoCheckout Cron] Auto-checked out ${record.emp_id} at ${checkoutTime} (9h after ${record.checkin_time})`);
+      console.log(`[AutoCheckout Cron] ${record.emp_id} → ${checkoutTime} (${isEodTrigger ? 'EOD' : '9h'} trigger, ${workedHours}h worked)`);
     }
   } catch (err) {
     console.error('[AutoCheckout Cron] Error:', err.message);
