@@ -462,11 +462,11 @@ router.put('/:id/checkout', authenticate, authorize('employee'), upload.single('
     // >= 6 hours → full day, needs manager review
     // >= 4 hours → half day leave attached, manager review
     // <  4 hours → emergency leave, manager review
-    const AUTO_APPROVE_HOURS = 6;
+    const AUTO_APPROVE_HOURS = 9;
     const isAutoApproved = hoursElapsed >= AUTO_APPROVE_HOURS;
 
     let leaveType = null;
-    if (hoursElapsed >= 6) {
+    if (hoursElapsed >= 9) {
       leaveType = null;               // Full day — no leave (whether auto-approved or pending)
     } else if (hoursElapsed >= 4) {
       leaveType = 'Half Day';
@@ -541,7 +541,7 @@ router.put('/:id/checkout', authenticate, authorize('employee'), upload.single('
         // Notify manager only if NOT auto-approved
         if (!isAutoApproved && record.manager_id) {
           const emp = await User.findById(req.user.id).select('name').lean();
-          const hoursLabel = hoursElapsed >= 6
+          const hoursLabel = hoursElapsed >= 9
             ? `Full day (${workedHours.toFixed(1)} hrs)`
             : hoursElapsed >= 4
             ? `Half Day (${workedHours.toFixed(1)} hrs)`
