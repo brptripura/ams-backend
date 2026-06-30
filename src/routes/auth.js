@@ -14,7 +14,7 @@ const { sendSMS, mode: smsMode } = require('../utils/sms');
 // ── Secure token helpers ──────────────────────────────────────────────────
 const generateToken = () => crypto.randomBytes(32).toString('hex');           // 64-char hex
 const hashToken     = (t) => crypto.createHash('sha256').update(t).digest('hex');
-const generateOTP   = () => Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit
+const generateOTP   = () => crypto.randomInt(100000, 1000000).toString(); // 6-digit, cryptographically secure
 
 // ── Rate limiters (relaxed in dev, strict in production) ──────────────────
 const isDev = process.env.NODE_ENV !== 'production';
@@ -83,7 +83,11 @@ router.post('/register-super-admin', [
   body('name').trim().notEmpty().withMessage('Name is required'),
   body('email').isEmail().normalizeEmail({ gmail_remove_dots: false, all_lowercase: true }).withMessage('Valid email required'),
   body('empId').trim().notEmpty().withMessage('Employee ID is required'),
-  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+  body('password')
+    .isLength({ min: 8 }).withMessage('Password must be at least 8 characters')
+    .matches(/[A-Z]/).withMessage('Must contain at least one uppercase letter')
+    .matches(/[0-9]/).withMessage('Must contain at least one number')
+    .matches(/[!@#$%^&*(),.?":{}|<>]/).withMessage('Must contain at least one special character'),
   body('department').trim().notEmpty().withMessage('Department is required'),
 ], validate, async (req, res) => {
   try {
@@ -124,7 +128,7 @@ if (existingSuperAdmin) {
       emp_id:        empId,
       name,
       email,
-      password_hash: bcrypt.hashSync(password, 10),
+      password_hash: bcrypt.hashSync(password, 12),
       role:          'super_admin',
       department,
       phone:         phone || null,
@@ -559,7 +563,7 @@ router.get('/verify-email/:token', async (req, res) => {
     if (!user) {
       return res.status(400).send(page(false,
         'Link Invalid or Expired',
-        'This verification link is no longer valid. It may have already been used or expired (links are valid for 24 hours).<br><br>Please log in and request a new verification email from your profile.'
+        'This verification link is no longer valid. It may have already been used or expired (links are valid for 2 hours).<br><br>Please log in and request a new verification email from your profile.'
       ));
     }
 
@@ -588,7 +592,7 @@ router.post('/resend-verification', authenticate, async (req, res) => {
 
     const rawToken  = generateToken();
     const hashedTok = hashToken(rawToken);
-    const expires   = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+    const expires   = new Date(Date.now() + 2 * 60 * 60 * 1000); // 2h
 
     await User.findByIdAndUpdate(user._id, {
       $set: { email_verify_token: hashedTok, email_verify_expires: expires }
@@ -608,7 +612,7 @@ router.post('/resend-verification', authenticate, async (req, res) => {
             Verify Email
           </a>
         </div>
-        <p style="color:#94a3b8;font-size:12px;">This link expires in 24 hours.</p>
+        <p style="color:#94a3b8;font-size:12px;">This link expires in 2 hours.</p>
       `),
       { type: 'VERIFY_EMAIL' }
     );
@@ -633,7 +637,7 @@ router.post('/send-phone-otp', otpLimiter, authenticate, async (req, res) => {
     const expires = new Date(Date.now() + 10 * 60 * 1000); // 10 min
 
     await User.findByIdAndUpdate(user._id, {
-      $set: { phone_otp: hashed, phone_otp_expires: expires }
+      $set: { phone_otp: hashed, phone_otp_expires: expires, phone_otp_attempts: 0, phone_otp_locked_until: null }
     });
 
     // ── Try SMS first (preferred) ──────────────────────────────────────────
@@ -683,14 +687,34 @@ router.post('/verify-phone-otp', authenticate, [
     if (!user?.phone_otp || !user?.phone_otp_expires)
       return res.status(400).json({ success: false, message: 'No pending OTP. Request a new one.' });
 
+    // Brute force lockout — max 3 attempts per OTP
+    if (user.phone_otp_locked_until && new Date() < user.phone_otp_locked_until)
+      return res.status(429).json({ success: false, message: 'Too many incorrect attempts. Request a new OTP.' });
+
     if (new Date() > user.phone_otp_expires)
       return res.status(400).json({ success: false, message: 'OTP expired. Request a new one.' });
 
-    if (hashToken(req.body.otp) !== user.phone_otp)
-      return res.status(400).json({ success: false, message: 'Invalid OTP' });
+    if (hashToken(req.body.otp) !== user.phone_otp) {
+      const attempts = (user.phone_otp_attempts || 0) + 1;
+      const lockUpdate = { phone_otp_attempts: attempts };
+      if (attempts >= 3) {
+        // Invalidate the OTP and lock for 10 minutes
+        lockUpdate.phone_otp = null;
+        lockUpdate.phone_otp_expires = null;
+        lockUpdate.phone_otp_locked_until = new Date(Date.now() + 10 * 60 * 1000);
+      }
+      await User.findByIdAndUpdate(user._id, { $set: lockUpdate });
+      const remaining = Math.max(0, 3 - attempts);
+      return res.status(400).json({
+        success: false,
+        message: attempts >= 3
+          ? 'Too many incorrect attempts. Request a new OTP.'
+          : `Invalid OTP. ${remaining} attempt${remaining !== 1 ? 's' : ''} remaining.`,
+      });
+    }
 
     await User.findByIdAndUpdate(user._id, {
-      $set: { phone_verified: true, phone_otp: null, phone_otp_expires: null }
+      $set: { phone_verified: true, phone_otp: null, phone_otp_expires: null, phone_otp_attempts: 0, phone_otp_locked_until: null }
     });
     await AuditLog.create({ _id: uuidv4(), user_id: user._id, action: 'PHONE_VERIFIED', ip_address: req.ip });
     res.json({ success: true, message: 'Phone verified successfully' });

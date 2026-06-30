@@ -48,16 +48,14 @@ app.use(helmet({
   frameguard: { action: 'deny' },
 }));
 
+const isProd = process.env.NODE_ENV === 'production';
 const ALLOWED_ORIGINS = [
   'https://monitermark.brptripura.com',
   'https://mm-service.brptripura.com',
   process.env.FRONTEND_URL,
   process.env.BACKEND_URL,
-  'http://localhost:3000',
-  'http://localhost:3001',
-  'capacitor://localhost',
-  'http://localhost',
-  'https://localhost',
+  'capacitor://localhost',   // Expo/Capacitor mobile — always needed
+  ...(isProd ? [] : ['http://localhost:3000', 'http://localhost:3001', 'http://localhost', 'https://localhost']),
 ].filter(Boolean);
 app.use(cors({
   origin: (origin, cb) => {

@@ -9,7 +9,7 @@ router.get('/proxy', async (req, res) => {
 
   let parsed;
   try { parsed = new URL(url); } catch { return res.status(400).json({ error: 'invalid url' }); }
-  if (parsed.hostname !== 'res.cloudinary.com') return res.status(403).json({ error: 'Forbidden' });
+  if (parsed.protocol !== 'https:' || parsed.hostname !== 'res.cloudinary.com') return res.status(403).json({ error: 'Forbidden' });
 
   try {
     const upstream = await fetch(url);

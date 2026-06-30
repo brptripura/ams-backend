@@ -36,9 +36,11 @@ const userSchema = new mongoose.Schema({
   // ── Password changed timestamp (for global logout) ─────────────────
   pwd_changed_at:       { type: Date,    default: null },
   // ── Phone OTP ────────────────────────────────────────────────────────
-  phone_otp:            { type: String,  default: null },  // hashed OTP
-  phone_otp_expires:    { type: Date,    default: null },
-  phone_verified:       { type: Boolean, default: false },
+  phone_otp:              { type: String,  default: null },  // hashed OTP
+  phone_otp_expires:      { type: Date,    default: null },
+  phone_otp_attempts:     { type: Number,  default: 0 },
+  phone_otp_locked_until: { type: Date,    default: null },
+  phone_verified:         { type: Boolean, default: false },
   // ── Account lockout ─────────────────────────────────────────────────
   failed_login_attempts: { type: Number, default: 0 },
   login_locked_until:    { type: Date, default: null },

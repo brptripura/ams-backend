@@ -456,10 +456,9 @@ router.post('/checkin', authenticate, authorize('employee'), upload.single('self
       verificationPending: false,
       data:                formatRecord(record),
     });
-    // Face verification disabled
-    // setImmediate(() => {
-    //   runBackgroundFaceVerify(id, selfieBuffer, enrolledPhotoUrl, selfiesMimetype, empName, empId);
-    // });
+    setImmediate(() => {
+      runBackgroundFaceVerify(id, selfieBuffer, enrolledPhotoUrl, selfiesMimetype, empName, empId);
+    });
 
   } catch (err) {
     // Only reached if an error occurs BEFORE res.status(201) was sent

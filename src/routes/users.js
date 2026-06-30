@@ -393,6 +393,10 @@ router.put('/:id', authenticate, async (req, res) => {
     if (req.user.role === 'admin' && role && ['admin', 'super_admin'].includes(role))
       return res.status(403).json({ success: false, message: 'Admins cannot assign admin or super admin roles' });
 
+    // Prevent admin from changing their own role (privilege escalation/de-escalation of own account)
+    if (req.user.role === 'admin' && String(req.params.id) === String(req.user.id) && role && role !== user.role)
+      return res.status(403).json({ success: false, message: 'Admins cannot change their own role' });
+
     const newManagerId = managerId !== undefined ? (managerId || null) : user.manager_id;
     const newBlock     = assignedBlock !== undefined ? (assignedBlock || null) : user.assigned_block;
     const newDistrict  = assignedDistrict !== undefined ? (assignedDistrict || null) : user.assigned_district;
