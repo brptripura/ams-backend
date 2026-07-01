@@ -287,17 +287,21 @@ router.get('/export',
     if (!employees.length)
       return res.status(404).json({success:false,message:'No employees found'});
 
-    // ── Manager name for signature ─────────────────────────────────────────────
+    // ── Manager / Reporting Officer name for signature ──────────────────────────
     let managerName = '';
     if (role === 'manager') {
       const mgr = await User.findById(req.user.id).select('name').lean();
       managerName = mgr?.name || '';
     } else if (role === 'employee') {
-      const emp = await User.findById(req.user.id).select('manager_id').lean();
-      if (emp?.manager_id) {
-        const mgr = await User.findById(emp.manager_id).select('name').lean();
-        managerName = mgr?.name || '';
-      }
+      // FIX: employee's own download must show their Reporting Officer
+      // (set on the employee's profile page), NOT the assigned BRP manager.
+      const emp = await User.findById(req.user.id)
+        .select('reporting_officer_name reporting_officer_designation').lean();
+      managerName = emp?.reporting_officer_name
+        ? (emp.reporting_officer_designation
+            ? `${emp.reporting_officer_designation}. ${emp.reporting_officer_name}`
+            : emp.reporting_officer_name)
+        : '';
     } else if (managerId && String(managerId).trim() !== '') {
       // HR/super_admin filtered by a specific manager — show that manager's name
       const mgr = await User.findById(toObjId(managerId)).select('name').lean();
@@ -543,7 +547,7 @@ router.get('/export',
           empSigCell.alignment={horizontal:'center',vertical:'bottom'};
           empSigCell.border={bottom:{style:'medium',color:{argb:'FF1F3864'}}};
 
-          ws.getCell(r,8).value='Manager Sign:';
+          ws.getCell(r,8).value='Reporting Officer Sign:';
           ws.getCell(r,8).font={bold:true,size:15,name:'Calibri',color:{argb:'FF1F3864'}};
           mc(ws,r,12,r,13);
           const mgrSigCell=ws.getCell(r,12);
@@ -741,7 +745,7 @@ router.get('/export',
         doc.moveTo(ML+90,sy+12).lineTo(ML+90+sigLineW,sy+12).stroke('#1F3864');
 
         const mgrSigX=ML+90+sigLineW+60;
-        doc.fillColor('#1F3864').fontSize(16).font('Helvetica-Bold').text('Manager Sign:',mgrSigX,sy);
+        doc.fillColor('#1F3864').fontSize(16).font('Helvetica-Bold').text('Reporting Officer Sign:',mgrSigX,sy);
         doc.moveTo(mgrSigX+90,sy+12).lineTo(mgrSigX+90+sigLineW,sy+12).stroke('#1F3864');
         if(managerName){
           doc.fillColor('#555').fontSize(20).font('Helvetica-Oblique')

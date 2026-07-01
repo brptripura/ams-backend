@@ -23,6 +23,11 @@ const userSchema = new mongoose.Schema({
   is_active:         { type: Number, default: 1 },
   assigned_block:    { type: String, default: null },
   assigned_district: { type: String, default: null },
+  // ── Employment / office details (self-editable + admin-editable) ──────
+  joining_date:                  { type: String, default: null }, // "YYYY-MM-DD"
+  office_name:                   { type: String, default: null },
+  reporting_officer_name:        { type: String, default: null },
+  reporting_officer_designation: { type: String, default: null },
   // ── Email verification ───────────────────────────────────────────────
   email_verified:       { type: Boolean, default: false },
   email_verify_token:   { type: String,  default: null },  // hashed token

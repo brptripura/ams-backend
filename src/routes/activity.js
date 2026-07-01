@@ -235,6 +235,43 @@ router.get('/:id', authenticate, async (req, res) => {
   }
 });
 
+// ── GET /api/activity/stats/my ─────────────────────────────────────────
+// FIX: this route did not exist at all — that's the exact cause of the
+// repeated 404s on `/api/activity/stats/my?...&endDate=...` in your console.
+// ProfilePage.jsx calls activityAPI.getMyStats({ startDate, endDate }) for
+// both the "This Month" and "All Time" toggle, so it fired twice per load.
+//
+// NOTE: "completed" below counts this user's own logged Activity entries in
+// the range (the same `Activity` model /api/activity uses). "performance" is
+// computed against the same monthly target (4) used by /stats/compliance.
+// If you have a separate ActivitySchedule model (the one behind the
+// scheduleAPI.initiate/complete endpoints) and want "pending" to reflect
+// scheduled-but-not-yet-completed tasks instead of always 0, share that
+// model/route file and I'll wire "pending" from there.
+router.get('/stats/my', authenticate, [
+  query('startDate').optional().isISO8601(),
+  query('endDate').optional().isISO8601(),
+], validate, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const { start, end } = dateRangeFromFilter('monthly', startDate, endDate);
+
+    const completed = await Activity.countDocuments({
+      user_id: req.user.id,
+      activity_date: { $gte: start, $lte: end },
+    });
+
+    const pending = 0; // placeholder — see NOTE above
+    const TARGET  = 4; // matches /stats/compliance threshold
+    const performance = `${Math.min(100, Math.round((completed / TARGET) * 100))}%`;
+
+    res.json({ success: true, data: { completed, pending, performance }, start, end });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 // ── GET /api/activity/stats/heatmap ───────────────────────────────────
 router.get('/stats/heatmap', authenticate, authorize('admin', 'manager', 'hr'), [
   query('filter').optional().isIn(['weekly', 'biweekly', 'monthly']),

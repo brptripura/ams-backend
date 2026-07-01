@@ -211,7 +211,11 @@ router.post('/', authenticate, authorize('admin'), [
   body('department').notEmpty().withMessage('Department is required'),
 ], validate, async (req, res) => {
   try {
-    const { name, email, empId, role, department, managerId, hrId,phone, assignedBlock, assignedDistrict, roleType, designation } = req.body;
+    const {
+      name, email, empId, role, department, managerId, hrId, phone,
+      assignedBlock, assignedDistrict, roleType, designation,
+      joiningDate, officeName, reportingOfficerName, reportingOfficerDesignation,
+    } = req.body;
     
     if (req.user.role === 'admin' && ['admin', 'super_admin'].includes(role))
       return res.status(403).json({ success: false, message: 'Admins cannot create admin or super admin accounts' });
@@ -248,6 +252,11 @@ router.post('/', authenticate, authorize('admin'), [
       assigned_district: assignedDistrict || null,
       role_type: roleType || null,        // ← FIX: Save roleType
       designation: designation || null,    // ← FIX: Save designation
+      // ── NEW: employment / office details ──
+      joining_date:                  joiningDate || null,
+      office_name:                   officeName || null,
+      reporting_officer_name:        reportingOfficerName || null,
+      reporting_officer_designation: reportingOfficerDesignation || null,
       email_verified: false,
       email_verify_token: hashedVerifyTok, 
       email_verify_expires: new Date(Date.now() + 86400000),
@@ -351,6 +360,56 @@ router.put('/:id/reset-password', authenticate, authorize('admin'), async (req, 
   }
 });
 
+// ── PUT /api/users/me/profile — self-service update (any authenticated user) ──
+// Lets an employee/manager/etc update their OWN employment/contact details.
+// Does NOT allow role, isActive, managerId, hrId, assignedBlock/District changes —
+// those still go through the admin panel or the "Request …" notification flow.
+router.put('/me/profile', authenticate, [
+  body('phone').optional({ checkFalsy: true }).isLength({ min: 10, max: 10 }).withMessage('Phone must be exactly 10 digits'),
+], validate, async (req, res) => {
+  try {
+    const FIELD_MAP = {
+      phone:                       'phone',
+      joiningDate:                 'joining_date',
+      designation:                 'designation',
+      officeName:                  'office_name',
+      reportingOfficerName:        'reporting_officer_name',
+      reportingOfficerDesignation: 'reporting_officer_designation',
+    };
+
+    const update = {};
+    for (const [bodyKey, dbKey] of Object.entries(FIELD_MAP)) {
+      if (req.body[bodyKey] === undefined) continue;
+      const val = typeof req.body[bodyKey] === 'string' ? req.body[bodyKey].trim() : req.body[bodyKey];
+      update[dbKey] = val === '' ? null : val;
+    }
+
+    if (!Object.keys(update).length) {
+      return res.status(400).json({ success: false, message: 'No valid fields to update' });
+    }
+
+    await User.findByIdAndUpdate(req.user.id, { $set: update });
+
+    await AuditLog.create({
+      _id: uuidv4(),
+      user_id: req.user.id,
+      action: 'SELF_PROFILE_UPDATE',
+      entity_type: 'user',
+      entity_id: req.user.id,
+      new_value: JSON.stringify(update),
+    });
+
+    const updated = await User.findById(req.user.id)
+      .select('-password_hash -email_verify_token -pwd_reset_token -phone_otp -login_attempts -login_locked_until')
+      .lean();
+
+    res.json({ success: true, message: 'Profile updated successfully', data: formatUser(updated) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 // ── PUT /api/users/:id ────────────────────────────────────────────────────
 router.put('/:id', authenticate, authorize('admin', 'super_admin'), async (req, res) => {
   try {
@@ -360,7 +419,11 @@ router.put('/:id', authenticate, authorize('admin', 'super_admin'), async (req, 
     if (req.user.role === 'admin' && ['admin', 'super_admin'].includes(user.role))
       return res.status(403).json({ success: false, message: 'Admins cannot modify admin or super admin accounts' });
     
-    const { name, email, role, department, managerId, hrId,phone, isActive, assignedBlock, assignedDistrict, roleType, designation } = req.body;
+    const {
+      name, email, role, department, managerId, hrId, phone, isActive,
+      assignedBlock, assignedDistrict, roleType, designation,
+      joiningDate, officeName, reportingOfficerName, reportingOfficerDesignation,
+    } = req.body;
     
     if (req.user.role === 'admin' && role && ['admin', 'super_admin'].includes(role))
       return res.status(403).json({ success: false, message: 'Admins cannot assign admin or super admin roles' });
@@ -383,7 +446,12 @@ router.put('/:id', authenticate, authorize('admin', 'super_admin'), async (req, 
       assigned_block: newBlock, 
       assigned_district: newDistrict,
      role_type: (roleType !== undefined && roleType !== null) ? roleType : user.role_type,        // ← FIX
-      designation: designation !== undefined ? (designation || null) : user.designation  // ← FIX
+      designation: designation !== undefined ? (designation || null) : user.designation,  // ← FIX
+      // ── NEW: employment / office details — admin can also edit these ──
+      joining_date:                  joiningDate !== undefined ? (joiningDate || null) : user.joining_date,
+      office_name:                   officeName !== undefined ? (officeName || null) : user.office_name,
+      reporting_officer_name:        reportingOfficerName !== undefined ? (reportingOfficerName || null) : user.reporting_officer_name,
+      reporting_officer_designation: reportingOfficerDesignation !== undefined ? (reportingOfficerDesignation || null) : user.reporting_officer_designation,
     };
     
     await User.findByIdAndUpdate(req.params.id, { $set: update });
@@ -465,16 +533,26 @@ router.delete('/:id', authenticate, authorize('admin', 'super_admin'), async (re
 
 // ── POST /api/users/request-assignment ───────────────────────────────────
 router.post('/request-assignment', authenticate, authorize('employee'), [
-  body('type').isIn(['manager', 'block']).withMessage('type must be "manager" or "block"'),
+  body('type').isIn(['manager', 'block', 'district', 'hr', 'role_type', 'photo']).withMessage('Invalid request type'),
   body('note').optional().trim(),
 ], validate, async (req, res) => {
   try {
     const { type, note } = req.body;
     const emp    = await User.findById(req.user.id).select('name emp_id email').lean();
     const admins = await User.find({ role: 'admin', is_active: 1 }).select('_id email').lean();
-    const label   = type === 'manager' ? 'Manager Assignment' : 'Block Assignment';
+    const LABELS = {
+      manager:   'Manager Assignment',
+      block:     'Block Assignment',
+      district:  'District Assignment',
+      hr:        'HR (Competent Authority) Assignment',
+      role_type: 'Role Type Assignment',
+      photo:     'Profile Photo Update',
+    };
+    const label   = LABELS[type] || 'Assignment';
     const title   = `Request: ${label}`;
-    const message = note ? `${emp.name} (${emp.emp_id}) requests a ${type === 'manager' ? 'reporting manager' : 'block'} assignment. Note: ${note}` : `${emp.name} (${emp.emp_id}) requests a ${type === 'manager' ? 'reporting manager' : 'block'} assignment.`;
+    const message = note
+      ? `${emp.name} (${emp.emp_id}) requests a ${label.toLowerCase()}. Note: ${note}`
+      : `${emp.name} (${emp.emp_id}) requests a ${label.toLowerCase()}.`;
     
     if (admins.length) {
       await Notification.insertMany(admins.map(a => ({ 
@@ -649,17 +727,8 @@ router.post(
  
       const user = await User.findById(req.user.id).select('profile_photo_path profile_photo_uploaded role name emp_id').lean();
  
-      // ── FIX 2A: Check if user role is allowed ────────────────────────────
-      if (!['employee'].includes(user?.role)) {
-        return res.status(403).json({
-          success: false,
-          message: 'Profile photo enrollment is only available for employees.',
-          locked: true,
-        });
-      }
-
-      // ── LOCKED: reject if already uploaded ────────────────────────────
-      if (user?.profile_photo_path) {
+      // ── Employees: locked/permanent enrollment. Non-employees: always allowed. ──
+      if (user?.role === 'employee' && user?.profile_photo_path) {
         return res.status(409).json({
           success: false,
           message:  'Profile photo already enrolled. It cannot be changed. Contact your admin if there is an issue.',
@@ -693,7 +762,9 @@ router.post(
  
       res.status(201).json({
         success:    true,
-        message:    'Profile photo enrolled successfully. This is permanent and cannot be changed.',
+        message:    user?.role === 'employee'
+          ? 'Profile photo enrolled successfully. This is permanent and cannot be changed.'
+          : 'Profile photo updated successfully.',
         photoPath,
       });
     } catch (err) {
@@ -775,6 +846,11 @@ function formatUser(u) {
     createdAt:        u.created_at,
     assignedBlock:    u.assigned_block,
     assignedDistrict: u.assigned_district,
+    // ── NEW: employment / office details ─────────────────────────────
+    joiningDate:                 u.joining_date                  || null,
+    officeName:                  u.office_name                   || null,
+    reportingOfficerName:        u.reporting_officer_name         || null,
+    reportingOfficerDesignation: u.reporting_officer_designation  || null,
     // ── New grouped scan papers ─────────────────────────────────────
     // Shape: { "2026-04": { month, monthLabel, files: [...] }, ... }
     scan_papers:         papersByMonth,

@@ -645,7 +645,66 @@ router.post('/apply-leave', authenticate, authorize('employee'), [
     });
   } catch (err) { console.error(err); res.status(500).json({ success: false, message: 'Server error' }); }
 });
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/attendance/assign-training
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/assign-training', authenticate, authorize('employee'), [
+  body('district').notEmpty().withMessage('District is required'),
+  body('block').notEmpty().withMessage('Block is required'),
+  body('startDate').isDate().withMessage('Valid start date required'),
+  body('endDate').isDate().withMessage('Valid end date required'),
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
 
+  try {
+    const { district, block, startDate, endDate } = req.body;
+    if (endDate < startDate)
+      return res.status(400).json({ success: false, message: 'End date must be on or after start date' });
+
+    const currentUser = await User.findById(req.user.id).select('name manager_id').lean();
+
+    await User.findByIdAndUpdate(req.user.id, {
+      $set: {
+        training_location: {
+          district, block,
+          start_date: startDate,
+          end_date:   endDate,
+          assigned_at: new Date(),
+        },
+      },
+    }, { strict: false });
+
+    await AuditLog.create({
+      _id: uuidv4(), user_id: req.user.id, action: 'ASSIGN_TRAINING',
+      entity_type: 'user', entity_id: req.user.id,
+      new_value: `${block}, ${district} (${startDate} to ${endDate})`,
+    });
+
+    if (currentUser?.manager_id) {
+      const dateRange = startDate === endDate ? startDate : `${startDate} to ${endDate}`;
+      await notify(
+        currentUser.manager_id,
+        'Training/Workshop Location Set',
+        `${currentUser.name} ,${emp.id} has set their training location to ${block}, ${district} for ${dateRange}.`,
+        'info', null, '/manager/queue'
+      );
+      const manager = await User.findById(currentUser.manager_id).select('email name').lean();
+      if (manager?.email) {
+        await sendMail(
+          manager.email,
+          `[AMS] Training Location Set – ${currentUser.name} (${dateRange})`,
+          `<p>Hi ${manager.name},</p><p><strong>${currentUser.name}</strong> has set their training/workshop location to <strong>${block}, ${district}</strong> for <strong>${dateRange}</strong>.</p>`
+        );
+      }
+    }
+
+    res.json({ success: true, message: 'Training location saved', data: { district, block, startDate, endDate } });
+  } catch (err) {
+    console.error('[AssignTraining]', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
 // ─────────────────────────────────────────────────────────────────────────────
 // PUT /api/attendance/:id/approve
 // ─────────────────────────────────────────────────────────────────────────────

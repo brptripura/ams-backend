@@ -293,6 +293,11 @@ router.post('/login', loginLimiter, [
       facePhotoUrl:     user.profile_photo_path || null,  
         assignedBlock:    user.assigned_block,
         assignedDistrict: user.assigned_district,
+        // ── NEW: employment / office details ─────────────────────────
+        joiningDate:                 user.joining_date                  || null,
+        officeName:                  user.office_name                   || null,
+        reportingOfficerName:        user.reporting_officer_name        || null,
+        reportingOfficerDesignation: user.reporting_officer_designation || null,
       }
     });
   } catch (err) {
@@ -371,6 +376,11 @@ router.get('/me', authenticate, async (req, res) => {
       createdAt:        u.created_at,
       assignedBlock:    u.assigned_block,
       assignedDistrict: u.assigned_district,
+      // ── NEW: employment / office details ───────────────────────────
+      joiningDate:                 u.joining_date                  || null,
+      officeName:                  u.office_name                   || null,
+      reportingOfficerName:        u.reporting_officer_name        || null,
+      reportingOfficerDesignation: u.reporting_officer_designation || null,
     }});
   } catch (err) {
     console.error(err);
