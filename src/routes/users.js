@@ -125,7 +125,13 @@ router.get('/team/attendance-summary', authenticate, authorize('manager', 'admin
         $lookup: {
           from:     'attendancerecords',
           let:      { empId: '$_id' },
-          pipeline: [{ $match: { $expr: { $and: [{ $eq: ['$emp_id', '$$empId'] }, { $eq: ['$date', today] }] } } }],
+          pipeline: [{ $match: { $expr: { $and: [
+            { $eq: ['$emp_id', '$$empId'] },
+            { $or: [
+              { $eq: ['$date', today] },
+              { $and: [{ $lte: ['$date', today] }, { $gte: ['$end_date', today] }] },
+            ]},
+          ]}}}],
           as: 'todayRecord',
         },
       },

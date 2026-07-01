@@ -332,17 +332,30 @@ router.get('/export',
         : null;
       const ab = emp.assigned_block    || null;
       const ad = emp.assigned_district || null;
+      const leaveCounts = { halfDay: 0, emergency: 0, casual: 0, other: 0 };
 
-    return {
-        emp,
-        cells: dates.map(iso => {
-          if (isNonWorkingDay(iso))           return 'WO'; // Sunday or 2nd/4th Sat
-          if (joinDate && iso < joinDate)     return '';   // pre-join → blank
-          if (isHoliday(iso))                 return 'H';  // public holiday
-          const rec = recIdx[String(emp._id)]?.[iso];
-          return toCode(rec, ab, ad);
-        }),
-      };
+      const cells = dates.map(iso => {
+        if (isNonWorkingDay(iso))           return 'WO'; // Sunday or 2nd/4th Sat
+        if (joinDate && iso < joinDate)     return '';   // pre-join → blank
+        if (isHoliday(iso))                 return 'H';  // public holiday
+        const rec = recIdx[String(emp._id)]?.[iso];
+        if (rec) {
+          const isLv = rec.duty_type === 'Leave' || (rec.leave_type && String(rec.leave_type).trim());
+          if (isLv) {
+            const ls = rec.leave_status || rec.status || 'Pending';
+            if (ls === 'Approved') {
+              const lt = String(rec.leave_type || '').toLowerCase();
+              if (lt.includes('half')) leaveCounts.halfDay++;
+              else if (lt.includes('emergency')) leaveCounts.emergency++;
+              else if (lt.includes('casual')) leaveCounts.casual++;
+              else leaveCounts.other++;
+            }
+          }
+        }
+        return toCode(rec, ab, ad);
+      });
+
+      return { emp, cells, leaveCounts };
     });
 
     const sd = new Date(startDate+'T00:00:00+05:30');
@@ -474,16 +487,24 @@ router.get('/export',
 
         if(empList.length===1){
           const er=5;
+          const lc0 = empList[0].leaveCounts || { halfDay:0, emergency:0, casual:0, other:0 };
+          const eff0 = +(lc0.halfDay * 0.5 + lc0.emergency + lc0.casual + lc0.other).toFixed(1);
           sumRow('No of Present / worked (P+OD)',`=COUNTIF(${fDC}${er}:${lDC}${er},"P")+COUNTIF(${fDC}${er}:${lDC}${er},"OD")`);
           sumRow('No of Leaves (L)',`=COUNTIF(${fDC}${er}:${lDC}${er},"L")`);
+          sumRow('  Half Day Leaves (each = 0.5 day)', lc0.halfDay);
+          sumRow('  Emergency Leaves', lc0.emergency);
+          sumRow('  Casual Leaves', lc0.casual);
+          if (lc0.other > 0) sumRow('  Other Leaves', lc0.other);
+          sumRow('Total Effective Leaves', eff0);
           sumRow('No of Absent (A)',`=COUNTIF(${fDC}${er}:${lDC}${er},"A")`);
         } else {
           // ── Table header row ────────────────────────────────────────────────
           r++; ws.getRow(r).height = 17;
           ws.getColumn(2).width = 22; ws.getColumn(3).width = 16;
           ws.getColumn(4).width = 14; ws.getColumn(5).width = 14;
+          ws.getColumn(6).width = 14; ws.getColumn(7).width = 16;
 
-          [['Employee Name','FF1F3864'], ['Present / Worked','FF047857'], ['No of Leaves','FFB45309'], ['No of Absent','FFB91C1C']].forEach(([hdr, argb], i) => {
+          [['Employee Name','FF1F3864'], ['Present / Worked','FF047857'], ['No of Leaves (L)','FFB45309'], ['No of Absent','FFB91C1C'], ['Half Day Leaves','FF7C3AED'], ['Eff. Leaves Total','FF0369A1']].forEach(([hdr, argb], i) => {
             const c = ws.getCell(r, 2 + i);
             c.value = hdr; c.fill = FILL_SUBH; c.border = CBDR;
             c.font = { bold: true, size: 10, color: { argb }, name: 'Calibri' };
@@ -491,10 +512,12 @@ router.get('/export',
           });
 
           // ── One row per employee ────────────────────────────────────────────
-          empList.forEach(({ emp }, idx) => {
+          empList.forEach(({ emp, leaveCounts: lc }, idx) => {
             r++; ws.getRow(r).height = 15;
             const rf  = idx % 2 === 0 ? FILL_WHT : FILL_ALT;
             const er  = 5 + idx;
+            const lcr = lc || { halfDay:0, emergency:0, casual:0, other:0 };
+            const effLv = +(lcr.halfDay * 0.5 + lcr.emergency + lcr.casual + lcr.other).toFixed(1);
 
             const cn = ws.getCell(r, 2);
             cn.value = emp.name; cn.fill = rf; cn.border = CBDR;
@@ -521,10 +544,24 @@ router.get('/export',
             ca.font = { bold: true, size: 10, name: 'Calibri', color: { argb: 'FFB91C1C' } };
             ca.alignment = { horizontal: 'center', vertical: 'center' };
             ca.protection = { locked: true };
+
+            const chd = ws.getCell(r, 6);
+            chd.value = lcr.halfDay;
+            chd.fill = rf; chd.border = CBDR;
+            chd.font = { bold: true, size: 10, name: 'Calibri', color: { argb: 'FF7C3AED' } };
+            chd.alignment = { horizontal: 'center', vertical: 'center' };
+            chd.protection = { locked: true };
+
+            const ceff = ws.getCell(r, 7);
+            ceff.value = effLv;
+            ceff.fill = rf; ceff.border = CBDR;
+            ceff.font = { bold: true, size: 10, name: 'Calibri', color: { argb: 'FF0369A1' } };
+            ceff.alignment = { horizontal: 'center', vertical: 'center' };
+            ceff.protection = { locked: true };
           });
         }
 
-        outerBorder(ws, SR, 2, r, 5);
+        outerBorder(ws, SR, 2, r, 7);
 
         // ── Signatures ────────────────────────────────────────────────────────
         r+=3; ws.getRow(r).height=20;
@@ -694,9 +731,15 @@ router.get('/export',
       pdfRow('No of Holidays (H)',holCount);
 
       if (matrix.length === 1) {
-        const cells = matrix[0].cells;
+        const { cells, leaveCounts: lc } = matrix[0];
+        const effLeaves = +(lc.halfDay * 0.5 + lc.emergency + lc.casual + lc.other).toFixed(1);
         pdfRow('No of Present / worked (P+OD)', cells.filter(c => c==='P'||c==='OD').length);
         pdfRow('No of Leaves (L)',               cells.filter(c => c==='L').length);
+        pdfRow('  Half Day Leaves (each = 0.5 day)', lc.halfDay);
+        pdfRow('  Emergency Leaves',             lc.emergency);
+        pdfRow('  Casual Leaves',                lc.casual);
+        if (lc.other > 0) pdfRow('  Other Leaves', lc.other);
+        pdfRow('Total Effective Leaves', effLeaves);
         pdfRow('No of Absent (A)',               cells.filter(c => c==='A').length);
       } else {
         sy++;
@@ -710,26 +753,28 @@ router.get('/export',
         doc.rect(SX+C0+C1,  sy, C2, SRH).fill('#FEF3C7').stroke('#000');
         doc.rect(SX+C0+C1+C2, sy, C3, SRH).fill('#FEE2E2').stroke('#000');
 
-        doc.fillColor('#1F3864').fontSize(8).font('Helvetica-Bold').text('Employee',   SX+4,    sy+4, {width:C0-8});
-        doc.fillColor('#047857').fontSize(8).font('Helvetica-Bold').text('Present',    SX+C0,   sy+4, {width:C1,align:'center'});
-        doc.fillColor('#B45309').fontSize(8).font('Helvetica-Bold').text('Leaves',     SX+C0+C1,sy+4, {width:C2,align:'center'});
-        doc.fillColor('#B91C1C').fontSize(8).font('Helvetica-Bold').text('Absent',     SX+C0+C1+C2,sy+4,{width:C3,align:'center'});
+        doc.fillColor('#1F3864').fontSize(8).font('Helvetica-Bold').text('Employee',     SX+4,    sy+4, {width:C0-8});
+        doc.fillColor('#047857').fontSize(8).font('Helvetica-Bold').text('Present',      SX+C0,   sy+4, {width:C1,align:'center'});
+        doc.fillColor('#B45309').fontSize(8).font('Helvetica-Bold').text('Eff. Leaves',  SX+C0+C1,sy+4, {width:C2,align:'center'});
+        doc.fillColor('#B91C1C').fontSize(8).font('Helvetica-Bold').text('Absent',       SX+C0+C1+C2,sy+4,{width:C3,align:'center'});
         sy += SRH;
 
-        matrix.forEach(({ emp, cells }, idx) => {
+        matrix.forEach(({ emp, cells, leaveCounts: lc }, idx) => {
           const bg = idx % 2 === 0 ? '#FFFFFF' : '#F7F7F7';
           doc.rect(SX,          sy, C0, SRH).fill(bg).stroke('#CCCCCC');
           doc.rect(SX+C0,       sy, C1, SRH).fill(bg).stroke('#CCCCCC');
           doc.rect(SX+C0+C1,    sy, C2, SRH).fill(bg).stroke('#CCCCCC');
           doc.rect(SX+C0+C1+C2, sy, C3, SRH).fill(bg).stroke('#CCCCCC');
 
-          const pres = cells.filter(c => c==='P'||c==='OD').length;
-          const lv   = cells.filter(c => c==='L').length;
-          const abs  = cells.filter(c => c==='A').length;
+          const pres    = cells.filter(c => c==='P'||c==='OD').length;
+          const abs     = cells.filter(c => c==='A').length;
+          const lcr     = lc || { halfDay:0, emergency:0, casual:0, other:0 };
+          const effLv   = +(lcr.halfDay * 0.5 + lcr.emergency + lcr.casual + lcr.other).toFixed(1);
+          const effStr  = effLv % 1 === 0 ? String(effLv) : effLv.toFixed(1);
 
-          doc.fillColor('#1F3864').fontSize(8.5).font('Helvetica-Bold').text(emp.name,     SX+4,   sy+3,{width:C0-8,lineBreak:false,ellipsis:true});
+          doc.fillColor('#1F3864').fontSize(8.5).font('Helvetica-Bold').text(emp.name,   SX+4,   sy+3,{width:C0-8,lineBreak:false,ellipsis:true});
           doc.fillColor('#047857').fontSize(9  ).font('Helvetica-Bold').text(String(pres), SX+C0,  sy+3,{width:C1,align:'center'});
-          doc.fillColor('#B45309').fontSize(9  ).font('Helvetica-Bold').text(String(lv),   SX+C0+C1,sy+3,{width:C2,align:'center'});
+          doc.fillColor('#B45309').fontSize(9  ).font('Helvetica-Bold').text(effStr,       SX+C0+C1,sy+3,{width:C2,align:'center'});
           doc.fillColor('#B91C1C').fontSize(9  ).font('Helvetica-Bold').text(String(abs),  SX+C0+C1+C2,sy+3,{width:C3,align:'center'});
           sy += SRH;
         });

@@ -314,14 +314,31 @@ router.get('/today', authenticate, async (req, res) => {
 router.get('/today-checkin-status', authenticate, authorize('admin', 'hr', 'super_admin', 'manager'), async (req, res) => {
   try {
     const today = istDateStr();
-    const match = { date: today, checkin_time: { $ne: null } };
-
+    let empFilter = {};
     if (req.user.role === 'manager') {
       const team = await User.find({ manager_id: req.user.id }).select('_id').lean();
-      match.emp_id = { $in: team.map(m => String(m._id)) };
+      empFilter = { emp_id: { $in: team.map(m => String(m._id)) } };
     }
 
-    const records = await AttendanceRecord.find(match, 'emp_id checkin_time checkout_time status').lean();
+    // Fetch check-in records and approved leaves in parallel
+    const [records, leaves] = await Promise.all([
+      AttendanceRecord.find(
+        { date: today, checkin_time: { $ne: null }, ...empFilter },
+        'emp_id checkin_time checkout_time status'
+      ).lean(),
+      AttendanceRecord.find(
+        {
+          duty_type: 'Leave', leave_status: 'Approved',
+          $or: [
+            { date: today, end_date: null },
+            { date: { $lte: today }, end_date: { $gte: today } },
+          ],
+          ...empFilter,
+        },
+        'emp_id leave_type'
+      ).lean(),
+    ]);
+
     const statusMap = {};
     records.forEach(r => {
       statusMap[String(r.emp_id)] = {
@@ -332,6 +349,14 @@ router.get('/today-checkin-status', authenticate, authorize('admin', 'hr', 'supe
         status:       r.status,
       };
     });
+    // Add leave entries (don't overwrite if somehow also checked in)
+    leaves.forEach(r => {
+      const uid = String(r.emp_id);
+      if (!statusMap[uid]) {
+        statusMap[uid] = { onLeave: true, leaveType: r.leave_type || 'Leave' };
+      }
+    });
+
     res.json({ success: true, data: statusMap });
   } catch (err) {
     console.error('[TodayCheckinStatus]', err.message);

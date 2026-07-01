@@ -318,8 +318,9 @@ router.get('/stats/my', authenticate, async (req, res) => {
     const completedDays = daysWithAct[0]?.total || 0;
 
     // Attendance days (days with a check-in) in range
+    // emp_id in AttendanceRecord is always the MongoDB _id (userId), not the emp code
     const attMatch = {
-      emp_id:       empId || userId,
+      emp_id:       userId,
       date:         { $gte: startDate, $lte: endDate },
       checkin_time: { $exists: true, $ne: null },
     };
