@@ -786,10 +786,10 @@ router.post('/apply-leave', authenticate, authorize('employee'), [
 
     const todayISO = istDateStr();
     const minDate  = new Date(todayISO); minDate.setDate(minDate.getDate() - 30);
-    const maxDate  = new Date(todayISO); maxDate.setDate(maxDate.getDate() + 10);
+    const maxDate  = new Date(todayISO); maxDate.setDate(maxDate.getDate() + 60);
     const startD   = new Date(date), endD = new Date(finalEndDate);
     if (startD < minDate) return res.status(400).json({ success: false, message: 'Cannot apply leave more than 30 days in the past' });
-    if (endD   > maxDate) return res.status(400).json({ success: false, message: 'Leave can only be planned up to 10 days in advance' });
+    if (endD   > maxDate) return res.status(400).json({ success: false, message: 'Leave can only be planned up to 60 days in advance' });
 
     const currentUser = await User.findById(req.user.id).select('manager_id name').lean();
     const managerId   = currentUser?.manager_id;
@@ -828,6 +828,29 @@ router.post('/apply-leave', authenticate, authorize('employee'), [
       count: dayCount,
       todayRecord: isTodayInRange ? formatRecord(record) : null,
     });
+  } catch (err) { console.error(err); res.status(500).json({ success: false, message: 'Server error' }); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /api/attendance/:id/cancel-leave  (employee only, Pending leaves only)
+// ─────────────────────────────────────────────────────────────────────────────
+router.delete('/:id/cancel-leave', authenticate, authorize('employee'), async (req, res) => {
+  try {
+    const record = await AttendanceRecord.findOne({ _id: req.params.id, emp_id: req.user.id }).lean();
+    if (!record) return res.status(404).json({ success: false, message: 'Leave record not found' });
+    if (record.duty_type !== 'Leave') return res.status(400).json({ success: false, message: 'This record is not a leave request' });
+    if (record.leave_status === 'Approved') return res.status(403).json({ success: false, message: 'Cannot cancel an approved leave' });
+    if (record.leave_status === 'Rejected') return res.status(400).json({ success: false, message: 'This leave has already been rejected' });
+
+    await AttendanceRecord.findByIdAndDelete(record._id);
+    await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'CANCEL_LEAVE', entity_type: 'attendance', entity_id: record._id, new_value: record.leave_type });
+
+    if (record.manager_id) {
+      const emp = await User.findById(req.user.id).select('name').lean();
+      await notify(record.manager_id, 'Leave Cancelled', `${emp?.name} cancelled their ${record.leave_type} for ${record.date}`, 'info', null, '/manager/queue');
+    }
+
+    res.json({ success: true, message: 'Leave request cancelled successfully' });
   } catch (err) { console.error(err); res.status(500).json({ success: false, message: 'Server error' }); }
 });
 
