@@ -186,7 +186,7 @@ const toCode = (rec, assignedBlock, assignedDistrict) => {
   const isLeave = rec.duty_type === 'Leave' || (rec.leave_type && String(rec.leave_type).trim());
   if (isLeave) {
     const ls = rec.leave_status || rec.status || 'Pending';
-    if (ls === 'Pending') return '';
+    if (ls === 'Pending') return 'LA';
     if (ls === 'Approved') {
       const isHalfDay = String(rec.leave_type || '').toLowerCase().includes('half');
       const hasCheckin = rec.checkin_time || rec.checkinTime;
@@ -298,7 +298,7 @@ router.get('/export',
     }
     // Compose label: "Designation. Name"
     const mgrLabel = roName
-      ? (roDesignation ? `${roDesignation}. ${roName}` : roName)
+      ? (roDesignation ? `${roName} (${roDesignation})` : roName)
       : '';
 
     // ── Attendance records ─────────────────────────────────────────────────────
@@ -314,14 +314,29 @@ router.get('/export',
     for (const r of rawRecs) {
       const eid = String(r.emp_id);
       if (!recIdx[eid]) recIdx[eid] = {};
-      const existing = recIdx[eid][r.date];
-      const existingIsRejectedLeave =
-        existing &&
-        (existing.duty_type === 'Leave' || (existing.leave_type && String(existing.leave_type).trim())) &&
-        (existing.leave_status === 'Rejected' || existing.status === 'Rejected');
-      // Replace if no existing record, or if existing is a rejected leave (prefer real check-in)
-      if (!existing || existingIsRejectedLeave) {
-        recIdx[eid][r.date] = r;
+      const isLeave = r.duty_type === 'Leave' || (r.leave_type && String(r.leave_type).trim());
+      // For multi-day leave records, expand across every date in the range
+      let datesToIndex = [r.date];
+      if (isLeave && r.end_date && r.end_date > r.date) {
+        datesToIndex = [];
+        const cur = new Date(r.date + 'T00:00:00');
+        const end = new Date(r.end_date + 'T00:00:00');
+        while (cur <= end) {
+          const iso = cur.toLocaleDateString('en-CA');
+          if (iso >= startDate && iso <= endDate) datesToIndex.push(iso);
+          cur.setDate(cur.getDate() + 1);
+        }
+      }
+      for (const d of datesToIndex) {
+        const existing = recIdx[eid][d];
+        const existingIsRejectedLeave =
+          existing &&
+          (existing.duty_type === 'Leave' || (existing.leave_type && String(existing.leave_type).trim())) &&
+          (existing.leave_status === 'Rejected' || existing.status === 'Rejected');
+        // Replace if no existing record, or if existing is a rejected leave (prefer real check-in)
+        if (!existing || existingIsRejectedLeave) {
+          recIdx[eid][d] = r;
+        }
       }
     }
 
@@ -378,10 +393,12 @@ router.get('/export',
       const FILL_SUBH = {type:'pattern',pattern:'solid',fgColor:{argb:'FFE8EDF4'}};
 
    const FILL_HOL  = {type:'pattern',pattern:'solid',fgColor:{argb:'FFFFF3CD'}};
+      const FILL_LA   = {type:'pattern',pattern:'solid',fgColor:{argb:'FFFEF9C3'}};
       const codeFill = (code, rf) => {
         if (code==='L'||code==='A') return FILL_RED;
         if (code==='WO')            return FILL_WO;
         if (code==='H')             return FILL_HOL;
+        if (code==='LA')            return FILL_LA;
         return rf;
       };   
 
@@ -437,7 +454,7 @@ router.get('/export',
           cells.forEach((code,i)=>{
             const c=ws.getCell(rowN,4+i); c.value=code; c.border=CBDR;
             c.alignment={horizontal:'center',vertical:'center',wrapText:false};
-            c.font={bold:!!code,size:9,name:'Calibri',color:{argb:(code==='L'||code==='A')?'FFFFFFFF':'FF000000'}};
+            c.font={bold:!!code,size:9,name:'Calibri',color:{argb:(code==='L'||code==='A')?'FFFFFFFF':code==='LA'?'FFB45309':'FF000000'}};
             c.fill=codeFill(code,rf); c.protection={locked:true};
           });
         });
@@ -451,11 +468,12 @@ router.get('/export',
          {code:'L',label:'Leave / LOP',isRed:true},
          {code:'A',label:'Absent',isRed:true},
          {code:'WO',label:'Week Off',isRed:false},
-        ].forEach(({code,label,isRed,isAmber},i)=>{
+         {code:'LA',label:'Leave Applied (Pending)',isRed:false,isLA:true},
+        ].forEach(({code,label,isRed,isAmber,isLA},i)=>{
           const cc=ws.getCell(legendRow,4+i*2);
-          cc.value=code; cc.fill=isRed?FILL_RED:isAmber?FILL_AMB:FILL_WHT; cc.border=CBDR;
+          cc.value=code; cc.fill=isRed?FILL_RED:isAmber?FILL_AMB:isLA?FILL_LA:FILL_WHT; cc.border=CBDR;
           cc.alignment={horizontal:'center',vertical:'center'};
-          cc.font={bold:true,size:8,name:'Calibri',color:{argb:isRed?'FFFFFFFF':isAmber?'FFD97706':'FF000000'}};
+          cc.font={bold:true,size:8,name:'Calibri',color:{argb:isRed?'FFFFFFFF':isAmber?'FFD97706':isLA?'FFB45309':'FF000000'}};
           ws.getCell(legendRow,4+i*2+1).value=label;
           ws.getCell(legendRow,4+i*2+1).font={size:8,name:'Calibri',italic:true};
         
@@ -496,15 +514,17 @@ router.get('/export',
           sumRow('  Casual Leaves', lc0.casual);
           if (lc0.other > 0) sumRow('  Other Leaves', lc0.other);
           sumRow('Total Effective Leaves', eff0);
-          sumRow('No of Absent (A)',`=COUNTIF(${fDC}${er}:${lDC}${er},"A")`);
+          sumRow('No of Absent (A)',`=COUNTIF(${fDC}${er}:${lDC}${er},"A")+COUNTIF(${fDC}${er}:${lDC}${er},"LA")`);
+          sumRow('No of Leave Applied / Pending (LA)',`=COUNTIF(${fDC}${er}:${lDC}${er},"LA")`);
         } else {
           // ── Table header row ────────────────────────────────────────────────
           r++; ws.getRow(r).height = 17;
           ws.getColumn(2).width = 22; ws.getColumn(3).width = 16;
           ws.getColumn(4).width = 14; ws.getColumn(5).width = 14;
           ws.getColumn(6).width = 14; ws.getColumn(7).width = 16;
+          ws.getColumn(8).width = 14;
 
-          [['Employee Name','FF1F3864'], ['Present / Worked','FF047857'], ['No of Leaves (L)','FFB45309'], ['No of Absent','FFB91C1C'], ['Half Day Leaves','FF7C3AED'], ['Eff. Leaves Total','FF0369A1']].forEach(([hdr, argb], i) => {
+          [['Employee Name','FF1F3864'], ['Present / Worked','FF047857'], ['No of Leaves (L)','FFB45309'], ['No of Absent','FFB91C1C'], ['Half Day Leaves','FF7C3AED'], ['Eff. Leaves Total','FF0369A1'], ['Leave Applied (LA)','FFD97706']].forEach(([hdr, argb], i) => {
             const c = ws.getCell(r, 2 + i);
             c.value = hdr; c.fill = FILL_SUBH; c.border = CBDR;
             c.font = { bold: true, size: 10, color: { argb }, name: 'Calibri' };
@@ -539,7 +559,7 @@ router.get('/export',
             cl.protection = { locked: true };
 
             const ca = ws.getCell(r, 5);
-            ca.value = { formula: `COUNTIF(${fDC}${er}:${lDC}${er},"A")` };
+            ca.value = { formula: `COUNTIF(${fDC}${er}:${lDC}${er},"A")+COUNTIF(${fDC}${er}:${lDC}${er},"LA")` };
             ca.fill = rf; ca.border = CBDR;
             ca.font = { bold: true, size: 10, name: 'Calibri', color: { argb: 'FFB91C1C' } };
             ca.alignment = { horizontal: 'center', vertical: 'center' };
@@ -558,10 +578,18 @@ router.get('/export',
             ceff.font = { bold: true, size: 10, name: 'Calibri', color: { argb: 'FF0369A1' } };
             ceff.alignment = { horizontal: 'center', vertical: 'center' };
             ceff.protection = { locked: true };
+
+            const cla = ws.getCell(r, 8);
+            cla.value = { formula: `COUNTIF(${fDC}${er}:${lDC}${er},"LA")` };
+            cla.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFEF9C3' } };
+            cla.border = CBDR;
+            cla.font = { bold: true, size: 10, name: 'Calibri', color: { argb: 'FFB45309' } };
+            cla.alignment = { horizontal: 'center', vertical: 'center' };
+            cla.protection = { locked: true };
           });
         }
 
-        outerBorder(ws, SR, 2, r, 7);
+        outerBorder(ws, SR, 2, r, 8);
 
         // ── Signatures ────────────────────────────────────────────────────────
         r+=3; ws.getRow(r).height=20;
@@ -576,7 +604,7 @@ router.get('/export',
           empSigCell.alignment={horizontal:'center',vertical:'bottom'};
           empSigCell.border={bottom:{style:'medium',color:{argb:'FF1F3864'}}};
 
-          ws.getCell(r,8).value='BRP Manager Sign:';
+          ws.getCell(r,8).value='Reporting Officer Sign:';
           ws.getCell(r,8).font={bold:true,size:15,name:'Calibri',color:{argb:'FF1F3864'}};
           mc(ws,r,12,r,13);
           const mgrSigCell=ws.getCell(r,12);
@@ -658,7 +686,7 @@ router.get('/export',
           doc.fillColor('#3366FF').fontSize(6).font('Helvetica-Bold').text(String(dayNum(iso)),x+1,y2+3,{width:dW-2,align:'center'});
         });
         doc.rect(xT,y2,CT,RH).fill('#FFF').stroke('#AAA');
-        doc.fillColor('#3366FF').fontSize(7).font('Helvetica-Bold').text('Total',xT+2,y2+3,{width:CT-4,align:'center'});
+        doc.fillColor('#3366FF').fontSize(7).font('Helvetica-Bold').text('P+OD',xT+2,y2+3,{width:CT-4,align:'center'});
         return y2+RH;
       };
 
@@ -673,10 +701,10 @@ router.get('/export',
         cells.forEach((code,i)=>{
           const x=xD+i*dW;
           const isRed=code==='L'||code==='A';
-          const cellBg=isRed?'#FF4444':code==='WO'?'#BDD7EE':code==='H'?'#FFF3CD':bg;
+          const cellBg=isRed?'#FF4444':code==='WO'?'#BDD7EE':code==='H'?'#FFF3CD':code==='LA'?'#FEF9C3':bg;
           doc.rect(x,y,dW,RH).fill(cellBg).stroke('#CCC');
           if(code){
-            doc.fillColor(isRed?'#FFFFFF':code==='H'?'#D97706':'#000000').fontSize(6).font('Helvetica-Bold')
+            doc.fillColor(isRed?'#FFFFFF':code==='H'?'#D97706':code==='LA'?'#B45309':'#000000').fontSize(6).font('Helvetica-Bold')
                .text(code,x+1,y+3,{width:dW-2,align:'center'});
           }
           if(code==='P'||code==='OD') pres++;
@@ -694,10 +722,11 @@ router.get('/export',
        {code:'L',label:'Leave / LOP',red:true},
        {code:'A',label:'Absent',red:true},
        {code:'WO',label:'Week Off',red:false},
-      ].forEach(({code,label,red})=>{
+       {code:'LA',label:'Leave Applied (Pending)',red:false,amber:true},
+      ].forEach(({code,label,red,amber})=>{
         const bw=14,lw=76;
-        doc.rect(lx,y,bw,10).fill(red?'#FF4444':'#FFFFFF').stroke('#999');
-        doc.fillColor(red?'#FFFFFF':'#000000').fontSize(6).font('Helvetica-Bold').text(code,lx+1,y+2,{width:bw-2,align:'center'});
+        doc.rect(lx,y,bw,10).fill(red?'#FF4444':amber?'#FEF9C3':'#FFFFFF').stroke('#999');
+        doc.fillColor(red?'#FFFFFF':amber?'#B45309':'#000000').fontSize(6).font('Helvetica-Bold').text(code,lx+1,y+2,{width:bw-2,align:'center'});
         doc.fillColor('#333').fontSize(7).font('Helvetica').text(label,lx+bw+2,y+1,{width:lw});
         lx+=bw+lw+4;
       });
@@ -711,7 +740,7 @@ router.get('/export',
       const _maxNamePt = matrix.length > 1
         ? Math.max(100, Math.min(320, Math.max(...matrix.map(({ emp }) => doc.widthOfString(emp.name || '')))))
         : 180;
-      const SW = _maxNamePt + 12 + _statColW * 3;
+      const SW = _maxNamePt + 12 + _statColW * 4;
       const SRH=16,SX=ML; let sy=y;
       const pdfRow=(label,value,type='row')=>{
         if(type==='title'){doc.rect(SX,sy,SW,SRH).fill('#FFF').stroke('#000'); doc.fillColor('#C00000').fontSize(10).font('Helvetica-Bold').text(label,SX,sy+3,{width:SW,align:'center'});}
@@ -740,42 +769,49 @@ router.get('/export',
         pdfRow('  Casual Leaves',                lc.casual);
         if (lc.other > 0) pdfRow('  Other Leaves', lc.other);
         pdfRow('Total Effective Leaves', effLeaves);
-        pdfRow('No of Absent (A)',               cells.filter(c => c==='A').length);
+        pdfRow('No of Absent (A)',               cells.filter(c => c==='A'||c==='LA').length);
+        pdfRow('No of Leave Applied / Pending (LA)', cells.filter(c => c==='LA').length);
       } else {
         sy++;
         const C0 = _maxNamePt + 12;
         const C1 = _statColW;
         const C2 = _statColW;
         const C3 = _statColW;
+        const C4 = _statColW;
 
-        doc.rect(SX,        sy, C0, SRH).fill('#E8EDF4').stroke('#000');
-        doc.rect(SX+C0,     sy, C1, SRH).fill('#D1FAE5').stroke('#000');
-        doc.rect(SX+C0+C1,  sy, C2, SRH).fill('#FEF3C7').stroke('#000');
-        doc.rect(SX+C0+C1+C2, sy, C3, SRH).fill('#FEE2E2').stroke('#000');
+        doc.rect(SX,              sy, C0, SRH).fill('#E8EDF4').stroke('#000');
+        doc.rect(SX+C0,           sy, C1, SRH).fill('#D1FAE5').stroke('#000');
+        doc.rect(SX+C0+C1,        sy, C2, SRH).fill('#FEF3C7').stroke('#000');
+        doc.rect(SX+C0+C1+C2,     sy, C3, SRH).fill('#FEE2E2').stroke('#000');
+        doc.rect(SX+C0+C1+C2+C3,  sy, C4, SRH).fill('#FEF9C3').stroke('#000');
 
-        doc.fillColor('#1F3864').fontSize(8).font('Helvetica-Bold').text('Employee',     SX+4,    sy+4, {width:C0-8});
-        doc.fillColor('#047857').fontSize(8).font('Helvetica-Bold').text('Present',      SX+C0,   sy+4, {width:C1,align:'center'});
-        doc.fillColor('#B45309').fontSize(8).font('Helvetica-Bold').text('Eff. Leaves',  SX+C0+C1,sy+4, {width:C2,align:'center'});
-        doc.fillColor('#B91C1C').fontSize(8).font('Helvetica-Bold').text('Absent',       SX+C0+C1+C2,sy+4,{width:C3,align:'center'});
+        doc.fillColor('#1F3864').fontSize(8).font('Helvetica-Bold').text('Employee',      SX+4,             sy+4, {width:C0-8});
+        doc.fillColor('#047857').fontSize(8).font('Helvetica-Bold').text('Present',       SX+C0,            sy+4, {width:C1,align:'center'});
+        doc.fillColor('#B45309').fontSize(8).font('Helvetica-Bold').text('Eff. Leaves',   SX+C0+C1,         sy+4, {width:C2,align:'center'});
+        doc.fillColor('#B91C1C').fontSize(8).font('Helvetica-Bold').text('Absent',        SX+C0+C1+C2,      sy+4, {width:C3,align:'center'});
+        doc.fillColor('#B45309').fontSize(8).font('Helvetica-Bold').text('LA',            SX+C0+C1+C2+C3,   sy+4, {width:C4,align:'center'});
         sy += SRH;
 
         matrix.forEach(({ emp, cells, leaveCounts: lc }, idx) => {
           const bg = idx % 2 === 0 ? '#FFFFFF' : '#F7F7F7';
-          doc.rect(SX,          sy, C0, SRH).fill(bg).stroke('#CCCCCC');
-          doc.rect(SX+C0,       sy, C1, SRH).fill(bg).stroke('#CCCCCC');
-          doc.rect(SX+C0+C1,    sy, C2, SRH).fill(bg).stroke('#CCCCCC');
-          doc.rect(SX+C0+C1+C2, sy, C3, SRH).fill(bg).stroke('#CCCCCC');
+          doc.rect(SX,              sy, C0, SRH).fill(bg).stroke('#CCCCCC');
+          doc.rect(SX+C0,           sy, C1, SRH).fill(bg).stroke('#CCCCCC');
+          doc.rect(SX+C0+C1,        sy, C2, SRH).fill(bg).stroke('#CCCCCC');
+          doc.rect(SX+C0+C1+C2,     sy, C3, SRH).fill(bg).stroke('#CCCCCC');
+          doc.rect(SX+C0+C1+C2+C3,  sy, C4, SRH).fill('#FEF9C3').stroke('#CCCCCC');
 
           const pres    = cells.filter(c => c==='P'||c==='OD').length;
-          const abs     = cells.filter(c => c==='A').length;
+          const abs     = cells.filter(c => c==='A'||c==='LA').length;
+          const laCount = cells.filter(c => c==='LA').length;
           const lcr     = lc || { halfDay:0, emergency:0, casual:0, other:0 };
           const effLv   = +(lcr.halfDay * 0.5 + lcr.emergency + lcr.casual + lcr.other).toFixed(1);
           const effStr  = effLv % 1 === 0 ? String(effLv) : effLv.toFixed(1);
 
-          doc.fillColor('#1F3864').fontSize(8.5).font('Helvetica-Bold').text(emp.name,   SX+4,   sy+3,{width:C0-8,lineBreak:false,ellipsis:true});
-          doc.fillColor('#047857').fontSize(9  ).font('Helvetica-Bold').text(String(pres), SX+C0,  sy+3,{width:C1,align:'center'});
-          doc.fillColor('#B45309').fontSize(9  ).font('Helvetica-Bold').text(effStr,       SX+C0+C1,sy+3,{width:C2,align:'center'});
-          doc.fillColor('#B91C1C').fontSize(9  ).font('Helvetica-Bold').text(String(abs),  SX+C0+C1+C2,sy+3,{width:C3,align:'center'});
+          doc.fillColor('#1F3864').fontSize(8.5).font('Helvetica-Bold').text(emp.name,      SX+4,              sy+3, {width:C0-8,lineBreak:false,ellipsis:true});
+          doc.fillColor('#047857').fontSize(9  ).font('Helvetica-Bold').text(String(pres),  SX+C0,             sy+3, {width:C1,align:'center'});
+          doc.fillColor('#B45309').fontSize(9  ).font('Helvetica-Bold').text(effStr,        SX+C0+C1,          sy+3, {width:C2,align:'center'});
+          doc.fillColor('#B91C1C').fontSize(9  ).font('Helvetica-Bold').text(String(abs),   SX+C0+C1+C2,       sy+3, {width:C3,align:'center'});
+          doc.fillColor('#B45309').fontSize(9  ).font('Helvetica-Bold').text(String(laCount),SX+C0+C1+C2+C3,   sy+3, {width:C4,align:'center'});
           sy += SRH;
         });
       }
@@ -785,16 +821,31 @@ router.get('/export',
       const sigLineW=140;
 
       if (role === 'employee') {
-        doc.fillColor('#1F3864').fontSize(16).font('Helvetica-Bold').text('Employee Sign:',ML,sy);
-        doc.moveTo(ML+90,sy+12).lineTo(ML+90+sigLineW,sy+12).stroke('#1F3864');
+        // Employee signature (left)
+        doc.fillColor('#1F3864').fontSize(11).font('Helvetica-Bold').text('Employee Sign:',ML,sy);
+        doc.moveTo(ML,sy+16).lineTo(ML+sigLineW,sy+16).stroke('#1F3864');
 
-        const mgrSigX=ML+90+sigLineW+60;
-        doc.fillColor('#1F3864').fontSize(16).font('Helvetica-Bold').text('BRP Manager Sign:',mgrSigX,sy);
-        doc.moveTo(mgrSigX+130,sy+12).lineTo(mgrSigX+130+sigLineW,sy+12).stroke('#1F3864');
-        if(mgrLabel){
-          doc.fillColor('#555').fontSize(10).font('Helvetica-Oblique')
-             .text(mgrLabel,mgrSigX+130,sy+15,{width:sigLineW,align:'center'});
+        // Reporting Officer block (right)
+        const roSigX = ML + sigLineW + 80;
+        const nameLabel = mgrLabel || '';
+        doc.fillColor('#1F3864').fontSize(11).font('Helvetica-Bold').text('Reporting Officer:',roSigX,sy);
+
+        // Name/Designation (auto-filled)
+        doc.fillColor('#555').fontSize(9).font('Helvetica').text('Name/Designation:',roSigX,sy+16);
+        if (nameLabel) {
+          doc.fillColor('#1F3864').fontSize(9).font('Helvetica-Bold')
+             .text(nameLabel, roSigX+80, sy+16, { width: sigLineW, lineBreak:false, ellipsis:true });
+        } else {
+          doc.moveTo(roSigX+80,sy+18).lineTo(roSigX+sigLineW+40,sy+18).stroke('#999');
         }
+
+        // Signature & Stamp
+        doc.fillColor('#555').fontSize(9).font('Helvetica').text('Signature & Stamp:',roSigX,sy+30);
+        doc.moveTo(roSigX+85,sy+32).lineTo(roSigX+sigLineW+40,sy+32).stroke('#1F3864');
+
+        // Date
+        doc.fillColor('#555').fontSize(9).font('Helvetica').text('Date:',roSigX,sy+44);
+        doc.moveTo(roSigX+24,sy+46).lineTo(roSigX+24+100,sy+46).stroke('#1F3864');
       }
 
       doc.end();
