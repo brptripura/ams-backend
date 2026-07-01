@@ -305,6 +305,40 @@ router.get('/today', authenticate, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/attendance/today-checkin-status
+// Returns today's check-in status map { [emp_id]: { checkedIn, checkedOut,
+// checkinTime, checkoutTime, status } } for admin/hr/super_admin/manager.
+// Used by the admin Users page to show live check-in badges.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/today-checkin-status', authenticate, authorize('admin', 'hr', 'super_admin', 'manager'), async (req, res) => {
+  try {
+    const today = istDateStr();
+    const match = { date: today, checkin_time: { $ne: null } };
+
+    if (req.user.role === 'manager') {
+      const team = await User.find({ manager_id: req.user.id }).select('_id').lean();
+      match.emp_id = { $in: team.map(m => String(m._id)) };
+    }
+
+    const records = await AttendanceRecord.find(match, 'emp_id checkin_time checkout_time status').lean();
+    const statusMap = {};
+    records.forEach(r => {
+      statusMap[String(r.emp_id)] = {
+        checkedIn:   true,
+        checkedOut:  !!r.checkout_time,
+        checkinTime:  r.checkin_time  || null,
+        checkoutTime: r.checkout_time || null,
+        status:       r.status,
+      };
+    });
+    res.json({ success: true, data: statusMap });
+  } catch (err) {
+    console.error('[TodayCheckinStatus]', err.message);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 // GET /api/attendance/:id
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id', authenticate, async (req, res) => {

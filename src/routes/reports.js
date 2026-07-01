@@ -559,7 +559,8 @@ router.get('/export',
         };
         ws.protect('BRP-READONLY',{
           selectLockedCells:true,selectUnlockedCells:true,
-          formatCells:false,insertRows:false,insertColumns:false,
+          formatCells:false,formatColumns:true,formatRows:true,
+          insertRows:false,insertColumns:false,
           deleteRows:false,deleteColumns:false,sort:false,
         });
       };
@@ -594,7 +595,7 @@ router.get('/export',
       doc.pipe(res);
 
       const PW=doc.page.width,PH=doc.page.height,ML=28;
-      const CC=52,CN=115,CT=36;
+      const CC=52,CN=140,CT=36;
       const dW=Math.max(11,(PW-56-CC-CN-CT)/dates.length);
       const RH=14;
       const xC=ML,xN=ML+CC,xD=xN+CN,xT=xD+dates.length*dW,tW=xT+CT-ML;
@@ -630,7 +631,7 @@ router.get('/export',
         const bg=idx%2===0?'#F9F9F9':'#FFF';
         doc.rect(ML,y,tW,RH).fill(bg).stroke('#CCC');
         doc.fillColor('#000').fontSize(7).font('Helvetica').text(emp.emp_id||'',xC+2,y+3,{width:CC-4,align:'center'});
-        doc.font('Helvetica-Bold').text(emp.name,xN+2,y+3,{width:CN-4});
+        doc.font('Helvetica-Bold').text(emp.name,xN+2,y+3,{width:CN-4,lineBreak:false,ellipsis:true});
         let pres=0;
         cells.forEach((code,i)=>{
           const x=xD+i*dW;
@@ -667,7 +668,14 @@ router.get('/export',
 
       // Summary
       y+=4; if(y+130>PH-60){addPage();y=40;}
-      const SW=240,SRH=16,SX=ML; let sy=y;
+      // Auto-size name column from actual data before drawing anything
+      const _statColW = 62;
+      doc.font('Helvetica-Bold').fontSize(8.5);
+      const _maxNamePt = matrix.length > 1
+        ? Math.max(100, Math.min(320, Math.max(...matrix.map(({ emp }) => doc.widthOfString(emp.name || '')))))
+        : 180;
+      const SW = _maxNamePt + 12 + _statColW * 3;
+      const SRH=16,SX=ML; let sy=y;
       const pdfRow=(label,value,type='row')=>{
         if(type==='title'){doc.rect(SX,sy,SW,SRH).fill('#FFF').stroke('#000'); doc.fillColor('#C00000').fontSize(10).font('Helvetica-Bold').text(label,SX,sy+3,{width:SW,align:'center'});}
         else if(type==='sub'){doc.rect(SX,sy,SW,SRH).fill('#E8EDF4').stroke('#000'); doc.fillColor('#1F3864').fontSize(9).font('Helvetica-Bold').text(label,SX,sy+3,{width:SW,align:'center'});}
@@ -692,11 +700,10 @@ router.get('/export',
         pdfRow('No of Absent (A)',               cells.filter(c => c==='A').length);
       } else {
         sy++;
-        const TW = SW;
-        const C0 = TW * 0.46;
-        const C1 = TW * 0.18;
-        const C2 = TW * 0.18;
-        const C3 = TW * 0.18;
+        const C0 = _maxNamePt + 12;
+        const C1 = _statColW;
+        const C2 = _statColW;
+        const C3 = _statColW;
 
         doc.rect(SX,        sy, C0, SRH).fill('#E8EDF4').stroke('#000');
         doc.rect(SX+C0,     sy, C1, SRH).fill('#D1FAE5').stroke('#000');
