@@ -645,6 +645,64 @@ router.post('/apply-leave', authenticate, authorize('employee'), [
     });
   } catch (err) { console.error(err); res.status(500).json({ success: false, message: 'Server error' }); }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /api/attendance/:id/cancel-leave
+// ─────────────────────────────────────────────────────────────────────────────
+router.delete('/:id/cancel-leave', authenticate, authorize('employee'), async (req, res) => {
+  try {
+    const record = await AttendanceRecord.findOne({ _id: req.params.id, emp_id: req.user.id }).lean();
+    if (!record) return res.status(404).json({ success: false, message: 'Record not found' });
+
+    if (!record.leave_type) {
+      return res.status(400).json({ success: false, message: 'This is not a leave request' });
+    }
+    if (record.leave_status !== 'Pending') {
+      return res.status(400).json({ success: false, message: `Cannot cancel — leave is already ${record.leave_status}` });
+    }
+
+    const { remark } = req.body;
+    const currentUser = await User.findById(req.user.id).select('name').lean();
+
+    await AttendanceRecord.deleteOne({ _id: req.params.id, emp_id: req.user.id });
+
+    try {
+      await AuditLog.create({
+        _id: uuidv4(), user_id: req.user.id, action: 'CANCEL_LEAVE',
+        entity_type: 'attendance', entity_id: req.params.id,
+        old_value: record.leave_status, new_value: 'CANCELLED',
+      });
+    } catch (auditErr) {
+      console.error('[CancelLeave] AuditLog failed (non-fatal):', auditErr.message);
+    }
+
+    if (record.manager_id) {
+      const dateRange = record.end_date && record.end_date !== record.date
+        ? `${record.date} to ${record.end_date}`
+        : record.date;
+      const remarkSuffix = remark?.trim() ? `: ${remark.trim()}` : '';
+      await notify(
+        record.manager_id,
+        `${record.leave_type} Cancelled`,
+        `${currentUser?.name || 'Employee'} cancelled their ${record.leave_type} request for ${dateRange}${remarkSuffix}`,
+        'info', null, '/manager/queue'
+      );
+      const manager = await User.findById(record.manager_id).select('email name').lean();
+      if (manager?.email) {
+        await sendMail(
+          manager.email,
+          `[AMS] Leave Cancelled – ${currentUser?.name || 'Employee'} (${dateRange})`,
+          `<p>Hi ${manager.name},</p><p><strong>${currentUser?.name || 'Employee'}</strong> has cancelled their <strong>${record.leave_type}</strong> request for <strong>${dateRange}</strong>.</p>${remark?.trim() ? `<p><strong>Note:</strong> ${remark.trim()}</p>` : ''}`
+        );
+      }
+    }
+
+    res.json({ success: true, message: 'Leave request cancelled' });
+  } catch (err) {
+    console.error('[CancelLeave] Error:', err);
+    res.status(500).json({ success: false, message: err.message || 'Server error' });
+  }
+});
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/attendance/assign-training
 // ─────────────────────────────────────────────────────────────────────────────

@@ -57,7 +57,7 @@ const monthlyFolderLabel = await employeeFolderLabel(req.user.id, { emp_id: req.
 const result  = await uploadToCloudinary(req.file.buffer, {
   folder:          `ams/employees/${monthlyFolderLabel}/monthly_reports`,
   resource_type:   (isImage || isPdf) ? 'image' : 'raw',  // PDFs upload as 'image' → served inline
-  public_id:       `${req.user.id}_${month_key}`,
+   public_id:       `${monthlyFolderLabel}_activity_report_${month_key}`,
   use_filename:    true,
   unique_filename: false,
 });
