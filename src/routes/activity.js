@@ -115,7 +115,7 @@ router.post('/', authenticate, upload.array('documents', 10), activityValidators
 
 // ── GET /api/activity ──────────────────────────────────────────────────
 router.get('/', authenticate, [
-  query('filter').optional().isIn(['weekly', 'biweekly', 'monthly']),
+  query('filter').optional().isIn(['weekly', 'biweekly', 'monthly','custom']),
   query('startDate').optional().isISO8601(),
   query('endDate').optional().isISO8601(),
   query('block').optional().trim(),
@@ -359,7 +359,7 @@ router.get('/stats/compliance', authenticate, authorize('admin', 'manager', 'hr'
 
 // ── GET /api/activity/report/excel ────────────────────────────────────
 router.get('/report/excel', authenticate, authorize('admin', 'manager', 'employee', 'hr', 'super_admin'), [
-  query('filter').optional().isIn(['weekly', 'biweekly', 'monthly', 'all']),
+  query('filter').optional().isIn(['weekly', 'biweekly', 'monthly', 'all','custom']),
   query('startDate').optional().isISO8601(),
   query('endDate').optional().isISO8601(),
 ], validate, async (req, res) => {
@@ -470,7 +470,7 @@ router.get('/report/excel', authenticate, authorize('admin', 'manager', 'employe
 });
 // ── GET /api/activity/report/pdf ──────────────────────────────────────
 router.get('/report/pdf', authenticate, authorize('admin', 'manager', 'employee', 'hr', 'super_admin'), [
-  query('filter').optional().isIn(['weekly', 'biweekly', 'monthly', 'all']),
+  query('filter').optional().isIn(['weekly', 'biweekly', 'monthly', 'all','custom']),
   query('startDate').optional().isISO8601(),
   query('endDate').optional().isISO8601(),
 ], validate, async (req, res) => {
