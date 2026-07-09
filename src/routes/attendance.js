@@ -10,7 +10,7 @@ const { authenticate, authorize }                         = require('../middlewa
 const { sendMail }                                        = require('../utils/mailer');
 const path = require('path');
 const { verifyFace, BLOCK_CONFIDENCE_MIN: FACE_MATCH_THRESHOLD } = require('../utils/faceVerify');
-
+const { getLoginContext } = require('./auth'); 
 // ── IST helpers ───────────────────────────────────────────────────────────
 const istDateStr    = () => new Date().toLocaleDateString('en-CA',  { timeZone: 'Asia/Kolkata' });
 const istTimeStr    = () => new Date().toLocaleTimeString('en-GB',  { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false }).substring(0, 5);
@@ -388,7 +388,14 @@ for (const dr of danglingRecords) {
       await AttendanceRecord.create({ _id: id, ...checkinFields });
     }
 
-    await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'CHECKIN', entity_type: 'attendance', entity_id: id });
+    const ctx = getLoginContext(req);
+await AuditLog.create({
+  _id: uuidv4(), user_id: req.user.id, action: 'CHECKIN',
+  entity_type: 'attendance', entity_id: id,
+  ip_address: ctx.ip_address, user_agent: ctx.user_agent,
+  device_type: ctx.device_type, os: ctx.os, browser: ctx.browser,
+  location: ctx.location,
+});
     const record = await AttendanceRecord.findById(id).lean();
     res.status(201).json({ success: true, message: 'Check-in successful', data: formatRecord(record) });
   } catch (err) { console.error(err); res.status(500).json({ success: false, message: 'Server error' }); }
@@ -601,10 +608,10 @@ router.post('/apply-leave', authenticate, authorize('employee'), [
 
     const todayISO = istDateStr();
     const minDate  = new Date(todayISO); minDate.setDate(minDate.getDate() - 30);
-    const maxDate  = new Date(todayISO); maxDate.setDate(maxDate.getDate() + 10);
+    const maxDate  = new Date(todayISO); maxDate.setDate(maxDate.getDate() + 60);
     const startD   = new Date(date), endD = new Date(finalEndDate);
     if (startD < minDate) return res.status(400).json({ success: false, message: 'Cannot apply leave more than 30 days in the past' });
-    if (endD   > maxDate) return res.status(400).json({ success: false, message: 'Leave can only be planned up to 10 days in advance' });
+    if (endD   > maxDate) return res.status(400).json({ success: false, message: 'Leave can only be planned up to 60 days in advance' });
 
     const currentUser = await User.findById(req.user.id).select('manager_id name').lean();
     const managerId   = currentUser?.manager_id;

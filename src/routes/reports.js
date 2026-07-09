@@ -481,11 +481,41 @@ router.get('/export',
         sumRow('No of Holidays (H)',hCount);
 
         if(empList.length===1){
-          const er=5;
-          sumRow('No of Present / worked (P+OD)',`=COUNTIF(${fDC}${er}:${lDC}${er},"P")+COUNTIF(${fDC}${er}:${lDC}${er},"OD")`);
-          sumRow('No of Leaves (L)',`=COUNTIF(${fDC}${er}:${lDC}${er},"L")`);
-          sumRow('No of Absent (A)',`=COUNTIF(${fDC}${er}:${lDC}${er},"A")`);
-        } else {
+  const er=5;
+  const empIdStr = String(empList[0].emp._id);
+
+  // Pull this employee's leave-type records for the date range
+  const empLeaveRecs = rawRecs.filter(r =>
+    String(r.emp_id) === empIdStr &&
+    (r.duty_type === 'Leave' || (r.leave_type && String(r.leave_type).trim()))
+  );
+
+  const byType = t => empLeaveRecs.filter(r => String(r.leave_type||'').toLowerCase().includes(t));
+  const halfDayRecs   = byType('half');
+  const emergencyRecs = byType('emergency');
+  const casualRecs    = byType('casual');
+  const pendingRecs   = empLeaveRecs.filter(r => (r.leave_status || r.status || 'Pending') === 'Pending');
+
+  // Effective leave days: matches toCode()'s L logic, half-day counts as 0.5
+  const effectiveLeaves = empLeaveRecs.reduce((sum, r) => {
+    const ls = r.leave_status || r.status || 'Pending';
+    if (ls === 'Pending') return sum;
+    const isHalf = String(r.leave_type||'').toLowerCase().includes('half');
+    const hasCheckin = r.checkin_time || r.checkinTime;
+    if (ls === 'Approved') return (isHalf && hasCheckin) ? sum : sum + (isHalf ? 0.5 : 1);
+    if (ls === 'Rejected') return hasCheckin ? sum : sum + (isHalf ? 0.5 : 1);
+    return sum;
+  }, 0);
+
+  sumRow('No of Present / worked (P+OD)', `=COUNTIF(${fDC}${er}:${lDC}${er},"P")+COUNTIF(${fDC}${er}:${lDC}${er},"OD")`);
+  sumRow('No of Leaves (L)', `=COUNTIF(${fDC}${er}:${lDC}${er},"L")`);
+  sumRow('No of Half Day Leaves (each = 0.5 day)', halfDayRecs.length);
+  sumRow('No of Emergency Leaves', emergencyRecs.length);
+  sumRow('No of Casual Leaves', casualRecs.length);
+  sumRow('Total Effective Leaves', effectiveLeaves);
+  sumRow('No of Absent (A)', `=COUNTIF(${fDC}${er}:${lDC}${er},"A")`);
+  sumRow('No of Leave Applied / Pending (LA)', pendingRecs.length);
+}else {
           // ── Table header row ────────────────────────────────────────────────
           r++; ws.getRow(r).height = 17;
           ws.getColumn(2).width = 22; ws.getColumn(3).width = 16;
@@ -609,29 +639,41 @@ router.get('/export',
 
       const addPage=()=>doc.addPage({size:'A3',layout:'landscape',margins:{top:28,bottom:28,left:28,right:28}});
 
-      const drawHdr=y=>{
-        doc.rect(ML,y,tW,20).fill('#FFF').stroke('#AAA');
-        doc.fillColor('#000').fontSize(12).font('Helvetica-Bold').text('Attendance details of BRP',ML,y+5,{width:tW,align:'center'});
-        doc.rect(ML,y+20,tW,14).fill('#FFF').stroke('#AAA');
-        doc.fillColor('#666').fontSize(8).font('Helvetica').text(rangeTitle,ML,y+23,{width:tW,align:'center'});
-        doc.rect(ML,y+34,tW,12).fill('#FFF').stroke('#AAA');
-        doc.fillColor('#000').fontSize(7).font('Helvetica-Bold')
-           .text('Location: Tripura',ML+4,y+37).text('Project: Block Resource Person',ML+tW/2,y+37);
-        const y2=y+46;
-        [[xC,CC,'Emp code'],[xN,CN,'Employee Name']].forEach(([x,w,l])=>{
-          doc.rect(x,y2,w,RH).fill('#FFF').stroke('#AAA');
-          doc.fillColor('#3366FF').fontSize(7).font('Helvetica-Bold').text(l,x+2,y2+3,{width:w-4,align:'center'});
-        });
-        dates.forEach((iso,i)=>{
-          const x=xD+i*dW;
-          doc.rect(x,y2,dW,RH).fill('#FFF').stroke('#AAA');
-          doc.fillColor('#3366FF').fontSize(6).font('Helvetica-Bold').text(String(dayNum(iso)),x+1,y2+3,{width:dW-2,align:'center'});
-        });
-        doc.rect(xT,y2,CT,RH).fill('#FFF').stroke('#AAA');
-        doc.fillColor('#3366FF').fontSize(7).font('Helvetica-Bold').text('Total',xT+2,y2+3,{width:CT-4,align:'center'});
-        return y2+RH;
-      };
+     const drawHdr=y=>{
+  doc.rect(ML,y,tW,20).fill('#FFF').stroke('#AAA');
+  doc.fillColor('#000').fontSize(12).font('Helvetica-Bold').text('Attendance details of BRP',ML,y+5,{width:tW,align:'center'});
+  doc.rect(ML,y+20,tW,14).fill('#FFF').stroke('#AAA');
+  doc.fillColor('#161515').fontSize(8).font('Helvetica').text(rangeTitle,ML,y+23,{width:tW,align:'center'});
+  doc.rect(ML,y+34,tW,12).fill('#FFF').stroke('#AAA');
+  doc.fillColor('#000').fontSize(7).font('Helvetica-Bold')
+     .text('Location: Tripura',ML+4,y+37).text('Project: Block Resource Person',ML+tW/2,y+37);
 
+  const y2=y+46;
+  const HRH = multiMonth ? 22 : RH;   // taller header row when spanning months
+
+  [[xC,CC,'Emp code'],[xN,CN,'Employee Name']].forEach(([x,w,l])=>{
+    doc.rect(x,y2,w,HRH).fill('#FFF').stroke('#AAA');
+    doc.fillColor('#3366FF').fontSize(7).font('Helvetica-Bold')
+       .text(l,x+2,y2+(HRH-9)/2,{width:w-4,align:'center'});
+  });
+
+  dates.forEach((iso,i)=>{
+    const x=xD+i*dW;
+    doc.rect(x,y2,dW,HRH).fill('#FFF').stroke('#AAA');
+    doc.fillColor('#3366FF').fontSize(6).font('Helvetica-Bold')
+       .text(String(dayNum(iso)),x+1,y2+3,{width:dW-2,align:'center'});
+    if (multiMonth) {
+      doc.fillColor('#888').fontSize(5).font('Helvetica')
+         .text(monAbbr(iso),x+1,y2+12,{width:dW-2,align:'center'});
+    }
+  });
+
+  doc.rect(xT,y2,CT,HRH).fill('#FFF').stroke('#AAA');
+  doc.fillColor('#3366FF').fontSize(7).font('Helvetica-Bold')
+     .text('Total',xT+2,y2+(HRH-9)/2,{width:CT-4,align:'center'});
+
+  return y2+HRH;
+};
       let y=drawHdr(ML);
       matrix.forEach(({emp,cells},idx)=>{
         if(y+RH>PH-60){addPage();y=drawHdr(28);}
@@ -694,11 +736,37 @@ router.get('/export',
       pdfRow('No of Holidays (H)',holCount);
 
       if (matrix.length === 1) {
-        const cells = matrix[0].cells;
-        pdfRow('No of Present / worked (P+OD)', cells.filter(c => c==='P'||c==='OD').length);
-        pdfRow('No of Leaves (L)',               cells.filter(c => c==='L').length);
-        pdfRow('No of Absent (A)',               cells.filter(c => c==='A').length);
-      } else {
+  const cells   = matrix[0].cells;
+  const empIdStr = String(matrix[0].emp._id);
+
+  const empLeaveRecs = rawRecs.filter(r =>
+    String(r.emp_id) === empIdStr &&
+    (r.duty_type === 'Leave' || (r.leave_type && String(r.leave_type).trim()))
+  );
+  const byType = t => empLeaveRecs.filter(r => String(r.leave_type||'').toLowerCase().includes(t));
+  const halfDayRecs   = byType('half');
+  const emergencyRecs = byType('emergency');
+  const casualRecs    = byType('casual');
+  const pendingRecs   = empLeaveRecs.filter(r => (r.leave_status || r.status || 'Pending') === 'Pending');
+  const effectiveLeaves = empLeaveRecs.reduce((sum, r) => {
+    const ls = r.leave_status || r.status || 'Pending';
+    if (ls === 'Pending') return sum;
+    const isHalf = String(r.leave_type||'').toLowerCase().includes('half');
+    const hasCheckin = r.checkin_time || r.checkinTime;
+    if (ls === 'Approved') return (isHalf && hasCheckin) ? sum : sum + (isHalf ? 0.5 : 1);
+    if (ls === 'Rejected') return hasCheckin ? sum : sum + (isHalf ? 0.5 : 1);
+    return sum;
+  }, 0);
+
+  pdfRow('No of Present / worked (P+OD)', cells.filter(c => c==='P'||c==='OD').length);
+  pdfRow('No of Leaves (L)',               cells.filter(c => c==='L').length);
+  pdfRow('No of Half Day Leaves (each = 0.5 day)', halfDayRecs.length);
+  pdfRow('No of Emergency Leaves',                 emergencyRecs.length);
+  pdfRow('No of Casual Leaves',                    casualRecs.length);
+  pdfRow('Total Effective Leaves',                 effectiveLeaves);
+  pdfRow('No of Absent (A)',               cells.filter(c => c==='A').length);
+  pdfRow('No of Leave Applied / Pending (LA)',      pendingRecs.length);
+} else {
         sy++;
         const TW = SW;
         const C0 = TW * 0.46;
@@ -739,19 +807,37 @@ router.get('/export',
       // Signatures (employee download only)
       sy+=24; if(sy+30>PH-28){addPage();sy=40;}
       const sigLineW=140;
+if (role === 'employee') {
+  // Employee Sign
+  doc.fillColor('#1F3864').fontSize(16).font('Helvetica-Bold').text('Employee Sign:', ML, sy);
+  doc.moveTo(ML + 130, sy + 14).lineTo(ML + 130 + sigLineW, sy + 14).stroke('#1F3864');
 
-      if (role === 'employee') {
-        doc.fillColor('#1F3864').fontSize(16).font('Helvetica-Bold').text('Employee Sign:',ML,sy);
-        doc.moveTo(ML+90,sy+12).lineTo(ML+90+sigLineW,sy+12).stroke('#1F3864');
+  // Reporting Officer block
+  const roX = ML + 130 + sigLineW + 80;
+  doc.fillColor('#1F3864').fontSize(16).font('Helvetica-Bold').text('Reporting Officer:', roX, sy);
 
-        const mgrSigX=ML+90+sigLineW+60;
-        doc.fillColor('#1F3864').fontSize(16).font('Helvetica-Bold').text('Reporting Officer Sign:',mgrSigX,sy);
-        doc.moveTo(mgrSigX+90,sy+12).lineTo(mgrSigX+90+sigLineW,sy+12).stroke('#1F3864');
-        if(managerName){
-          doc.fillColor('#555').fontSize(20).font('Helvetica-Oblique')
-             .text(`(${managerName})`,mgrSigX+90,sy+14,{width:sigLineW,align:'center'});
-        }
-      }
+  const lineGap = 34;
+  let ry = sy + lineGap;
+
+  // Name/Designation — value filled in BEFORE the label's blank line
+  doc.fillColor('#1F3864').fontSize(11).font('Helvetica-Bold').text('Name/Designation:', roX, ry);
+  if (managerName) {
+    doc.fillColor('#333').fontSize(16).font('Helvetica-Oblique')
+       .text(managerName, roX + 110, ry, { width: sigLineW });
+  } else {
+    doc.moveTo(roX + 110, ry + 11).lineTo(roX + 110 + sigLineW, ry + 11).stroke('#999');
+  }
+
+  ry += lineGap;
+  doc.fillColor('#1F3864').fontSize(11).font('Helvetica-Bold').text('Signature & Stamp:', roX, ry);
+  doc.moveTo(roX + 110, ry + 11).lineTo(roX + 110 + sigLineW, ry + 11).stroke('#1F3864');
+
+
+
+  ry += lineGap;
+  doc.fillColor('#1F3864').fontSize(11).font('Helvetica-Bold').text('Date:', roX, ry);
+  doc.moveTo(roX + 110, ry + 11).lineTo(roX + 110 + sigLineW, ry + 11).stroke('#999');
+}
 
       doc.end();
       return;

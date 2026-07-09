@@ -752,3 +752,4 @@ router.post('/verify-phone-otp', authenticate, [
 });
 
 module.exports = router;
+module.exports.getLoginContext = getLoginContext;
