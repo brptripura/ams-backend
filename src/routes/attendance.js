@@ -748,12 +748,12 @@ router.post('/assign-training', authenticate, authorize('employee'), [
 
     if (currentUser?.manager_id) {
       const dateRange = startDate === endDate ? startDate : `${startDate} to ${endDate}`;
-      await notify(
-        currentUser.manager_id,
-        'Training/Workshop Location Set',
-        `${currentUser.name} ,${emp.id} has set their training location to ${block}, ${district} for ${dateRange}.`,
-        'info', null, '/manager/queue'
-      );
+     await notify(
+  currentUser.manager_id,
+  'Training/Workshop Location Set',
+  `${currentUser.name} has set their training location to ${block}, ${district} for ${dateRange}.`,
+  'info', null, '/manager/queue'
+);
       const manager = await User.findById(currentUser.manager_id).select('email name').lean();
       if (manager?.email) {
         await sendMail(
