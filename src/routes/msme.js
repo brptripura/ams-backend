@@ -495,4 +495,128 @@ router.post('/propose', authenticate, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/msme/proposals — list proposals (admin / super_admin only)
+// Query params: status, managerId, empId, page, limit
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/proposals', authenticate, authorize(['admin', 'super_admin', 'hr']), async (req, res) => {
+  try {
+    const { status, managerId, empId, page = 1, limit = 100 } = req.query;
+
+    // Build filter
+    const filter = {};
+    if (status && status !== 'All') filter.status = status;
+    if (empId) filter.proposed_by = empId;
+
+    // If managerId specified, find all employees under that manager first
+    if (managerId && !empId) {
+      const teamEmpIds = await User.find({ manager_id: managerId, role: 'employee' }, 'emp_id').lean();
+      filter.proposed_by = { $in: teamEmpIds.map(u => u.emp_id) };
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const [proposals, total] = await Promise.all([
+      MsmeProposal.find(filter).sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit)).lean(),
+      MsmeProposal.countDocuments(filter),
+    ]);
+
+    // Enrich with employee name and manager name
+    const empIds = [...new Set(proposals.map(p => p.proposed_by).filter(Boolean))];
+    const employees = empIds.length
+      ? await User.find({ emp_id: { $in: empIds } }, 'emp_id name manager_id').lean()
+      : [];
+    const empMap = Object.fromEntries(employees.map(e => [e.emp_id, e]));
+
+    const managerIds = [...new Set(employees.map(e => e.manager_id).filter(Boolean))];
+    const managers = managerIds.length
+      ? await User.find({ _id: { $in: managerIds } }, 'name emp_id').lean()
+      : [];
+    const mgrMap = Object.fromEntries(managers.map(m => [m._id, m]));
+
+    const enriched = proposals.map(p => {
+      const emp = empMap[p.proposed_by] || null;
+      const mgr = emp ? mgrMap[emp.manager_id] : null;
+      return {
+        ...p,
+        proposed_by_name:    emp?.name       || p.proposed_by || 'Unknown',
+        proposed_by_emp_id:  p.proposed_by,
+        manager_name:        mgr?.name       || null,
+        manager_emp_id:      mgr?.emp_id     || null,
+      };
+    });
+
+    res.json({ success: true, data: enriched, pagination: { total, page: parseInt(page), limit: parseInt(limit) } });
+  } catch (err) {
+    console.error('[GET /msme/proposals]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUT /api/msme/proposals/:id/approve — approve proposal
+// Body (optional): udyam_number, sector, notes — creates master MSME entry
+// ─────────────────────────────────────────────────────────────────────────────
+router.put('/proposals/:id/approve', authenticate, authorize(['admin', 'super_admin']), async (req, res) => {
+  try {
+    const proposal = await MsmeProposal.findById(req.params.id);
+    if (!proposal) return res.status(404).json({ error: 'Proposal not found' });
+    if (proposal.status !== 'pending') return res.status(400).json({ error: 'Proposal already actioned' });
+
+    const { udyam_number, sector, notes } = req.body;
+
+    // If udyam_number provided, add to master list
+    if (udyam_number?.trim()) {
+      const exists = await MsmeMaster.findOne({ udyam_number: udyam_number.trim() });
+      if (!exists) {
+        await MsmeMaster.create({
+          _id:          uuidv4(),
+          msme_name:    proposal.msme_name,
+          udyam_number: udyam_number.trim(),
+          sector:       sector || null,
+          block_name:   proposal.block_name || 'Unknown',
+          district:     proposal.district   || 'Unknown',
+          address:      proposal.address    || null,
+          is_active:    true,
+        });
+      }
+    }
+
+    proposal.status = 'approved';
+    if (notes) proposal.review_notes = notes;
+    proposal.reviewed_by  = req.user?.emp_id || req.user?.id || null;
+    proposal.reviewed_at  = new Date();
+    await proposal.save();
+
+    res.json({ success: true, message: 'Proposal approved' });
+  } catch (err) {
+    console.error('[PUT /msme/proposals/:id/approve]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUT /api/msme/proposals/:id/reject — reject proposal with remark
+// ─────────────────────────────────────────────────────────────────────────────
+router.put('/proposals/:id/reject', authenticate, authorize(['admin', 'super_admin']), async (req, res) => {
+  try {
+    const proposal = await MsmeProposal.findById(req.params.id);
+    if (!proposal) return res.status(404).json({ error: 'Proposal not found' });
+    if (proposal.status !== 'pending') return res.status(400).json({ error: 'Proposal already actioned' });
+
+    const { remark } = req.body;
+    if (!remark?.trim()) return res.status(400).json({ error: 'Rejection remark is required' });
+
+    proposal.status      = 'rejected';
+    proposal.review_notes = remark.trim();
+    proposal.reviewed_by  = req.user?.emp_id || req.user?.id || null;
+    proposal.reviewed_at  = new Date();
+    await proposal.save();
+
+    res.json({ success: true, message: 'Proposal rejected' });
+  } catch (err) {
+    console.error('[PUT /msme/proposals/:id/reject]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

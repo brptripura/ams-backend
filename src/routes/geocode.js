@@ -56,12 +56,17 @@ router.get('/', async (req, res) => {
     };
   };
 
-  const results = await Promise.allSettled([fromNominatim(), fromBigData()]);
-  const winner  = results.find(r => r.status === 'fulfilled' && (r.value.city || r.value.suburb || r.value.district || r.value.state));
-  if (winner) return res.json({ lat, lng, ...winner.value });
+  const results   = await Promise.allSettled([fromNominatim(), fromBigData()]);
+  const fulfilled = results.filter(r => r.status === 'fulfilled').map(r => r.value);
+  const winner    = fulfilled.find(v => v.city || v.suburb || v.district || v.state);
+  if (winner) {
+    // Nominatim often omits postcode for Indian urban areas — fill from BigDataCloud if needed
+    const postcode = winner.postcode || fulfilled.find(v => v.postcode)?.postcode || '';
+    return res.json({ lat, lng, ...winner, postcode });
+  }
 
-  const partial = results.find(r => r.status === 'fulfilled');
-  if (partial) return res.json({ lat, lng, ...partial.value });
+  const partial = fulfilled[0];
+  if (partial) return res.json({ lat, lng, ...partial });
 
   res.status(502).json({ error: 'geocoding failed', details: results.map(r => r.reason?.message) });
 });

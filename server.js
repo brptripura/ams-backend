@@ -54,8 +54,7 @@ const ALLOWED_ORIGINS = [
   'https://mm-service.brptripura.com',
   process.env.FRONTEND_URL,
   process.env.BACKEND_URL,
-  'capacitor://localhost',   // Expo/Capacitor mobile — always needed
-  ...(isProd ? [] : ['http://localhost:3000', 'http://localhost:3001', 'http://localhost', 'https://localhost']),
+  'http://localhost:3000', 'http://localhost:3001'
 ].filter(Boolean);
 app.use(cors({
   origin: (origin, cb) => {
