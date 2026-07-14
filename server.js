@@ -54,7 +54,7 @@ const ALLOWED_ORIGINS = [
   'https://mm-service.brptripura.com',
   process.env.FRONTEND_URL,
   process.env.BACKEND_URL,
-  'http://localhost:3000', 'http://localhost:3001', 'http://103.44.0.48:3000','http://erp.brptripura.com:3000'
+  'http://localhost:3000', 'http://localhost:3001', 'http://103.44.0.48:3000','http://erp.brptripura.com'
 ].filter(Boolean);
 app.use(cors({
   origin: (origin, cb) => {
