@@ -138,15 +138,35 @@ router.get('/', async (req, res) => {
 
     if (!payload) throw new Error('geocoding failed');
 
-    // Known bad district names from third-party sources, applied regardless
-    // of which source "won" above — Nominatim isn't always available (it
-    // rate-limits to ~1 req/sec and fails under load, silently falling back
-    // to BigDataCloud's guess), so the preference above alone isn't
-    // reliable. BigDataCloud's Wikidata-sourced entry for this district
-    // (wikidataId Q16086076) is itself misspelled "Sepahijala district" —
-    // this is a permanent correction, not a live-geocode-dependent one.
+    // Known bad district values from third-party sources, applied
+    // unconditionally regardless of which source "won" above — Nominatim
+    // isn't always available (it rate-limits to ~1 req/sec and fails under
+    // load, silently falling back to BigDataCloud's guess), so preferring
+    // Nominatim's district earlier isn't reliable on its own.
     if (payload.district) {
+      // BigDataCloud's Wikidata-sourced entry for this district (wikidataId
+      // Q16086076) is itself misspelled "Sepahijala district".
       payload.district = payload.district.replace(/sepahijala/i, 'Sipahijala');
+
+      // BigDataCloud's adminLevel-5 guess sometimes returns a district
+      // headquarters/major town's own name instead of the district it
+      // belongs to (e.g. "Agartala" instead of "West Tripura") — same
+      // failure mode as the Sepahijala typo, just a different wrong value.
+      // Map the known ones back to their real district.
+      const TOWN_TO_DISTRICT = {
+        agartala:    'West Tripura',
+        udaipur:     'Gomati',
+        belonia:     'South Tripura',
+        dharmanagar: 'North Tripura',
+        kailashahar: 'Unakoti',
+        kailasahar:  'Unakoti',
+        ambassa:     'Dhalai',
+        bishramganj: 'Sipahijala',
+      };
+      const bareDistrict = payload.district.toLowerCase().replace(/\s*district\s*$/i, '').trim();
+      if (TOWN_TO_DISTRICT[bareDistrict]) {
+        payload.district = TOWN_TO_DISTRICT[bareDistrict];
+      }
     }
 
     // Persist to memory and MongoDB
