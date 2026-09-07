@@ -138,6 +138,17 @@ router.get('/', async (req, res) => {
 
     if (!payload) throw new Error('geocoding failed');
 
+    // Known bad district names from third-party sources, applied regardless
+    // of which source "won" above — Nominatim isn't always available (it
+    // rate-limits to ~1 req/sec and fails under load, silently falling back
+    // to BigDataCloud's guess), so the preference above alone isn't
+    // reliable. BigDataCloud's Wikidata-sourced entry for this district
+    // (wikidataId Q16086076) is itself misspelled "Sepahijala district" —
+    // this is a permanent correction, not a live-geocode-dependent one.
+    if (payload.district) {
+      payload.district = payload.district.replace(/sepahijala/i, 'Sipahijala');
+    }
+
     // Persist to memory and MongoDB
     _geoCache.set(ckey, payload);
     GeoCache.updateOne({ key: ckey }, { $set: { payload } }, { upsert: true }).catch(() => {});
