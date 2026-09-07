@@ -38,7 +38,7 @@ const DISTRICT_BLOCKS = {
   'Unakoti':      ['Chandipur','Gournagar','Kumarghat','Pecharthal','Kumarghat Municipal Council','Kailasahar Municipal Council'],
   'North Tripura':['Kalacherra','Laljuri','Jubrajnagar','Kadamtala','Dasda','Jampui Hills','Panisagar','Damcherra','Dharmanagar Municipal Council','Panisagar Nagar Panchayat'],
   'Dhalai':       ['Ambassa','Ganganagar','Salema','Durgachowmuhani','Dumburnagar','Raishyabari','Manu','Chawmanu','Ambassa Municipal Council','Kamalpur Nagar Panchayat'],
-  'Sepahijala':   ['Bishalgarh','Boxanagar','Charilam','Jampuijala','Nalchar','Mohanbhog','Kathalia','Bishalgarh Municipal Council','Melaghar Municipal Council','Sonamura Nagar Panchayat'],
+  'Sipahijala':   ['Bishalgarh','Boxanagar','Charilam','Jampuijala','Nalchar','Mohanbhog','Kathalia','Bishalgarh Municipal Council','Melaghar Municipal Council','Sonamura Nagar Panchayat'],
   'Gomati':       ['Matabari','Tepania','Killa','Kakraban','Amarpur','Ompi','Karbook','Silachhari','Udaipur Municipal Council','Amarpur Nagar Panchayat'],
   'South Tripura':['Hrishyamukh','Rajnagar','Bharat Chandra Nagar','Jolaibari','Bokafa','Satchand','Rupaichari','Poangbari','Belonia Municipal Council','Santirbazar Municipal Council','Sabroom Nagar Panchayat'],
   'West Tripura': ['Bamutia','Jirania','Belbari','Lefunga','Mandai','Dukli','Hezamara','Mohanpur','Old Agartala','Mohanpur Municipal Council','Ranirbazar Municipal Council','Jirania Nagar Panchayat','Agartala Municipal Council (North Zone)','Agartala Municipal Council (South Zone)','Agartala Municipal Council (East Zone)','Agartala Municipal Council (Central Zone)'],
