@@ -335,26 +335,16 @@ router.get('/export',
     }
     // admin/hr/super_admin without manager filter → no single manager; leave blank
 
-    // ── Attendance records ─────────────────────────────────────────────────────
-    // NOTE: intentionally NOT filtering by `status` here (unlike some other
-    // routes in this file) — this matrix needs every record for every day
-    // regardless of its status, since toCode() below already classifies each
-    // cell correctly from the record's own status/leave_status (LA/L/LOP/A/
-    // P/OD). Filtering the query by status made a Pending leave (or one that
-    // had just been Approved) vanish from the query entirely whenever the
-    // report was requested with a status filter other than 'All' — the cell
-    // then had no record at all and fell back to 'A' (Absent), even though
-    // the leave was genuinely pending/approved.
-    const recFilter = {
-      date:   {$gte:startDate,$lte:endDate},
-      emp_id: {$in:employees.map(e=>e._id)},
-    };
-    const rawRecs = await AttendanceRecord.find(recFilter).sort({date:1}).lean();
+const recFilter = {
+  emp_id: { $in: employees.map(e => e._id) },
+  date:   { $lte: endDate },              // record starts on/before the window's end
+  $or: [
+    { end_date: { $gte: startDate } },    // multi-day record whose range reaches into the window
+    { end_date: null, date: { $gte: startDate } }, // single-day record inside the window
+  ],
+};
+const rawRecs = await AttendanceRecord.find(recFilter).sort({ date: 1 }).lean();
 
-    // Build index — prefer real check-in records over rejected leave records for the same date.
-    // A multi-day leave (duty_type:'Leave' with end_date set) is stored as ONE record whose
-    // `date` field is only the start day — index it at every day in [date, end_date], not just
-    // the start, or every day after the first silently reads as Absent in the matrix below.
    const recIdx = {};
 for (const r of rawRecs) {
   const eid = String(r.emp_id);
