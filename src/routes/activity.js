@@ -114,7 +114,7 @@ router.post('/', authenticate, upload.array('documents', 10), activityValidators
 
     if (req.files?.length) {
       const empName = (req.user.name || 'unknown').replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_-]/g, '');
-      const empId   = (req.user.emp_id || req.user.id || 'NOID').replace(/[^a-zA-Z0-9_-]/g, '');
+      const empId   = String(req.user.emp_id || req.user.id || 'NOID').replace(/[^a-zA-Z0-9_-]/g, '');
       const uploaded = await Promise.all(
         req.files.map((f, idx) => {
           const ext      = path.extname(f.originalname).replace('.', '') || 'bin';

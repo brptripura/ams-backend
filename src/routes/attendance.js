@@ -14,7 +14,7 @@ const { employeeFolderPath } = require('../config/cloudinary');
 // ── File-naming helper ───────────────────────────────────────────────────
 const makeDocName = (user, docType, ext = '') => {
   const name  = (user.name || 'unknown').replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_-]/g, '');
-  const empId = (user.emp_id || user.id || 'NOID').replace(/[^a-zA-Z0-9_-]/g, '');
+  const empId = String(user.emp_id || user.id || 'NOID').replace(/[^a-zA-Z0-9_-]/g, '');
   const ts    = Date.now();
   return `${name}_${empId}_${docType}_${ts}${ext ? '.' + ext.replace(/^\./, '') : ''}`;
 };

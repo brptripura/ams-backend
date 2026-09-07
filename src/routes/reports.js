@@ -5,6 +5,7 @@ const express  = require('express');
 const router   = express.Router();
 const ExcelJS  = require('exceljs');
 const PDFDoc   = require('pdfkit');
+const { PDFDocument: MergePDFDocument, StandardFonts, rgb } = require('pdf-lib');
 const mongoose = require('mongoose');
 const { AttendanceRecord, User, Holiday } = require('../models/database');
 const { fmt12h } = require('../utils/time');
@@ -335,16 +336,26 @@ router.get('/export',
     }
     // admin/hr/super_admin without manager filter → no single manager; leave blank
 
-const recFilter = {
-  emp_id: { $in: employees.map(e => e._id) },
-  date:   { $lte: endDate },              // record starts on/before the window's end
-  $or: [
-    { end_date: { $gte: startDate } },    // multi-day record whose range reaches into the window
-    { end_date: null, date: { $gte: startDate } }, // single-day record inside the window
-  ],
-};
-const rawRecs = await AttendanceRecord.find(recFilter).sort({ date: 1 }).lean();
+    // ── Attendance records ─────────────────────────────────────────────────────
+    // NOTE: intentionally NOT filtering by `status` here (unlike some other
+    // routes in this file) — this matrix needs every record for every day
+    // regardless of its status, since toCode() below already classifies each
+    // cell correctly from the record's own status/leave_status (LA/L/LOP/A/
+    // P/OD). Filtering the query by status made a Pending leave (or one that
+    // had just been Approved) vanish from the query entirely whenever the
+    // report was requested with a status filter other than 'All' — the cell
+    // then had no record at all and fell back to 'A' (Absent), even though
+    // the leave was genuinely pending/approved.
+    const recFilter = {
+      date:   {$gte:startDate,$lte:endDate},
+      emp_id: {$in:employees.map(e=>e._id)},
+    };
+    const rawRecs = await AttendanceRecord.find(recFilter).sort({date:1}).lean();
 
+    // Build index — prefer real check-in records over rejected leave records for the same date.
+    // A multi-day leave (duty_type:'Leave' with end_date set) is stored as ONE record whose
+    // `date` field is only the start day — index it at every day in [date, end_date], not just
+    // the start, or every day after the first silently reads as Absent in the matrix below.
    const recIdx = {};
 for (const r of rawRecs) {
   const eid = String(r.emp_id);
@@ -1181,6 +1192,99 @@ if (role === 'employee') {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
+//  GET /api/reports/signed-attendance-merge — combines every employee's
+//  manager-signed monthly report (individually re-uploaded via
+//  POST /api/attendance/upload-signed-report, see User.signed_reports) into
+//  ONE PDF, employees ordered by Employee ID, instead of downloading and
+//  assembling each one by hand.
+// ══════════════════════════════════════════════════════════════════════════════
+router.get('/signed-attendance-merge',
+  authenticate,
+  authorize('super_admin', 'admin', 'hr', 'manager'),
+  async (req, res) => {
+  try {
+    const { month, managerId } = req.query;
+    const role = req.user.role;
+    if (!month || !/^\d{4}-\d{2}$/.test(month))
+      return res.status(400).json({ success: false, message: 'Valid month (YYYY-MM) is required' });
+
+    const EMP_SELECT = '_id name emp_id signed_reports';
+    let employees = [];
+    if (managerId && String(managerId).trim() !== '') {
+      employees = await User.find({ manager_id: toObjId(managerId), is_active: { $ne: false } }).select(EMP_SELECT).lean();
+    } else if (role === 'manager') {
+      employees = await User.find({ manager_id: toObjId(req.user.id), is_active: { $ne: false } }).select(EMP_SELECT).lean();
+    } else {
+      employees = await User.find({ role: 'employee', is_active: { $ne: false } }).select(EMP_SELECT).lean();
+    }
+
+    // Numeric-safe ascending Employee ID order — plain string sort would put
+    // "1968" after "23423" (lexicographic), so parse to int where possible.
+    employees.sort((a, b) => {
+      const aId = parseInt(a.emp_id, 10), bId = parseInt(b.emp_id, 10);
+      if (!isNaN(aId) && !isNaN(bId)) return aId - bId;
+      return String(a.emp_id || '').localeCompare(String(b.emp_id || ''));
+    });
+
+    const withReport = employees
+      .map(emp => ({ emp, report: (emp.signed_reports || []).find(r => r.month === month) }))
+      .filter(x => x.report);
+
+    if (!withReport.length)
+      return res.status(404).json({ success: false, message: `No signed reports have been uploaded for ${month}` });
+
+    const merged = await MergePDFDocument.create();
+    const font   = await merged.embedFont(StandardFonts.HelveticaBold);
+    const missing = [];
+    const A4 = [595.28, 841.89];
+
+    for (const { emp, report } of withReport) {
+      try {
+        const resp = await fetch(report.path);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const bytes = Buffer.from(await resp.arrayBuffer());
+        const mime  = resp.headers.get('content-type') || '';
+
+        if (mime.includes('pdf') || /\.pdf($|\?)/i.test(report.path)) {
+          const src   = await MergePDFDocument.load(bytes, { ignoreEncryption: true });
+          const pages = await merged.copyPages(src, src.getPageIndices());
+          pages.forEach(p => merged.addPage(p));
+        } else {
+          // JPG/PNG scan — page around it so the merged file stays one
+          // consistent PDF instead of mixing raw image bytes into pages.
+          const image = mime.includes('png') ? await merged.embedPng(bytes) : await merged.embedJpg(bytes);
+          const page  = merged.addPage(A4);
+          const { width: pw, height: ph } = page.getSize();
+          const margin = 30, labelH = 24;
+          const maxW = pw - margin * 2, maxH = ph - margin * 2 - labelH;
+          const scale = Math.min(maxW / image.width, maxH / image.height, 1);
+          const w = image.width * scale, h = image.height * scale;
+          page.drawText(`${emp.emp_id || ''} — ${emp.name}`, { x: margin, y: ph - margin, size: 11, font, color: rgb(0.12, 0.22, 0.39) });
+          page.drawImage(image, { x: (pw - w) / 2, y: ph - labelH - margin - h, width: w, height: h });
+        }
+      } catch (e) {
+        missing.push(`${emp.emp_id || ''} ${emp.name} — ${e.message}`);
+      }
+    }
+
+    if (missing.length) {
+      const page = merged.addPage(A4);
+      page.drawText('Could not merge the following signed reports:', { x: 40, y: 800, size: 12, font, color: rgb(0.6, 0.1, 0.1) });
+      missing.forEach((line, i) => page.drawText(line, { x: 40, y: 775 - i * 16, size: 10, font }));
+    }
+
+    const outBytes = await merged.save();
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="Signed_Attendance_${month}.pdf"`);
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+    res.send(Buffer.from(outBytes));
+  } catch (err) {
+    console.error('[SignedAttendanceMerge]', err);
+    res.status(500).json({ success: false, message: 'Failed to merge signed reports', error: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  GET /api/reports/leave-export
 // ══════════════════════════════════════════════════════════════════════════════
 router.get('/leave-export',
@@ -1723,7 +1827,18 @@ router.get('/daily-log-export',
     if (!startDate || !endDate)
       return res.status(400).json({success:false,message:'startDate and endDate are required'});
 
-    const recFilter = { date:{$gte:startDate,$lte:endDate}, emp_id: emp._id };
+    // Same overlap fix as the main /export route above — a multi-day leave
+    // dated at its START day would otherwise vanish from the query (and its
+    // in-range days wrongly read as Absent) whenever that start day falls
+    // before the requested window.
+    const recFilter = {
+      emp_id: emp._id,
+      date:   {$lte:endDate},
+      $or: [
+        { end_date: null, date: {$gte:startDate} },
+        { end_date: {$gte:startDate} },
+      ],
+    };
     if (status && !['All','Today Check-in'].includes(status)) recFilter.status = status;
 
    let recs = await AttendanceRecord.find(recFilter).sort({date:1}).lean();

@@ -1150,7 +1150,7 @@ router.post(
       }
 
       const _pExt  = path.extname(req.file.originalname).replace('.', '') || 'jpg';
-      const _pName = `${(req.user.name || 'unknown').replace(/\s+/g,'_').replace(/[^a-zA-Z0-9_-]/g,'')}_${(req.user.emp_id || req.user.id).replace(/[^a-zA-Z0-9_-]/g,'')}_profile.${_pExt}`;
+      const _pName = `${(req.user.name || 'unknown').replace(/\s+/g,'_').replace(/[^a-zA-Z0-9_-]/g,'')}_${String(req.user.emp_id || req.user.id).replace(/[^a-zA-Z0-9_-]/g,'')}_profile.${_pExt}`;
       const photoPath = await uploadFile(
         req.file.buffer,
         `ams/users/${req.user.emp_id || req.user.id}/profile`,
