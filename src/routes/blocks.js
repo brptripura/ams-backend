@@ -11,7 +11,7 @@ const BASE_DISTRICT_BLOCKS = {
   'Hyderabad':    ['Madhapur'],
   'Khowai':       ['Kalyanpur','Khowai','Mungiakami','Padmabil','Teliamura','Tulashikhar','Khowai Municipal Council','Teliamura Municipal Council'],
   'North Tripura':['Damcherra','Dasda','Jampui Hills','Jubrajnagar','Kadamtala','Kalacherra','Laljuri','Panisagar','Dharmanagar Municipal Council','Panisagar Nagar Panchayat'],
-  'Sepahijala':   ['Bishalgarh','Boxanagar','Charilam','Jampuijala','Kathalia','Mohanbhog','Nalchar','Bishalgarh Municipal Council','Melaghar Municipal Council','Sonamura Nagar Panchayat'],
+  'Sipahijala':   ['Bishalgarh','Boxanagar','Charilam','Jampuijala','Kathalia','Mohanbhog','Nalchar','Bishalgarh Municipal Council','Melaghar Municipal Council','Sonamura Nagar Panchayat'],
   'South Tripura':['Bharat Chandra Nagar','Bokafa','Hrishyamukh','Jolaibari','Poangbari','Rajnagar','Rupaichari','Satchand','Belonia Municipal Council','Sabroom Nagar Panchayat','Santirbazar Municipal Council'],
   'Unakoti':      ['Chandipur','Gournagar','Kumarghat','Pecharthal','Kailasahar Municipal Council','Kumarghat Municipal Council'],
   'West Tripura': ['Bamutia','Belbari','DIC West','Dukli','Hezamara','Jirania','Lefunga','Mandai','Mohanpur','Old Agartala','Agartala Municipal Council (Central Zone)','Agartala Municipal Council (East Zone)','Agartala Municipal Council (North Zone)','Agartala Municipal Council (South Zone)','Jirania Nagar Panchayat','Mohanpur Municipal Council','Ranirbazar Municipal Council'],

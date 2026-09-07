@@ -116,11 +116,24 @@ router.get('/', async (req, res) => {
     } catch { /* DB unavailable — fall through to live geocode */ }
 
     // Layer 3: live geocode — BigDataCloud + Nominatim in parallel
-    const results   = await Promise.allSettled([fromBigData(), fromNominatim()]);
-    const fulfilled = results.filter(r => r.status === 'fulfilled').map(r => r.value);
-    const winner    = fulfilled.find(v => v.city || v.suburb || v.district || v.state);
-    const payload   = winner
-      ? { ...winner, postcode: winner.postcode || fulfilled.find(v => v.postcode)?.postcode || '' }
+    const results    = await Promise.allSettled([fromBigData(), fromNominatim()]);
+    const [bigData, nominatim] = results.map(r => r.status === 'fulfilled' ? r.value : null);
+    const fulfilled  = results.filter(r => r.status === 'fulfilled').map(r => r.value);
+    const winner     = fulfilled.find(v => v.city || v.suburb || v.district || v.state);
+    const payload     = winner
+      ? {
+          ...winner,
+          // BigDataCloud's "district" is a guess at whatever admin-boundary
+          // entry sits at adminLevel 5 — for some Indian towns (e.g.
+          // Agartala) that's actually the city/municipal-corporation name,
+          // not the real district ("West Tripura"), which wrongly blocked
+          // check-in geofencing for anyone genuinely in that district.
+          // Nominatim's state_district is sourced from OSM's actual admin
+          // boundaries and is far more reliable here — prefer it whenever
+          // it resolved.
+          district: (nominatim?.district) || winner.district || '',
+          postcode: winner.postcode || fulfilled.find(v => v.postcode)?.postcode || '',
+        }
       : fulfilled[0];
 
     if (!payload) throw new Error('geocoding failed');
