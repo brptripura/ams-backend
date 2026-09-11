@@ -169,7 +169,14 @@ signed_reports: [{
     month_label: String,   // "April 2026"
     uploaded_at: Date,
     uploaded_by: String,   // user _id
-  }]
+  }],
+
+  // ── BDO-Signed Leave Letter ──────────────────────────────────────────
+  signed_leave_path:        { type: String, default: null }, // Cloudinary secure URL
+  signed_leave_public_id:   { type: String, default: null }, // for Cloudinary deletion
+  signed_leave_name:        { type: String, default: null }, // original filename
+  signed_leave_uploaded_at: { type: Date,   default: null },
+  signed_leave_uploaded_by: { type: String, default: null },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 attendanceRecordSchema.index({ emp_id: 1, date: 1 }, { unique: true });

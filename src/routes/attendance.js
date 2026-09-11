@@ -1,7 +1,7 @@
 ﻿const express        = require('express');
 const router         = express.Router();
 const multer         = require('multer');
-const { uploadFile } = require('../utils/storage');
+const { uploadFile,deleteFile } = require('../utils/storage');
 const { v4: uuidv4 } = require('uuid');
 const { body, validationResult } = require('express-validator');
 const { AttendanceRecord, User, Notification, AuditLog, CustomBlock, ODARequest } = require('../models/database');
@@ -48,14 +48,7 @@ const haversineMeters = (lat1, lon1, lat2, lon2) => {
 };
 const _fullyDecode = s => { let p; do { p = s; s = _decodeHtml(s); } while (s !== p); return s; };
 
-// ── Coarse IP-geolocation corroboration for check-in GPS ───────────────────
-// The client-supplied lat/lng that the geofence check above relies on is
-// fully spoofable (just edit the request body) — this is a second,
-// independent signal that's much harder to fake at the same time (it'd
-// require also routing the request through a Tripura-based proxy/VPN).
-// Deliberately non-blocking: IP geolocation is coarse and unreliable for
-// mobile carrier NAT — a mismatch only sets a review flag, never rejects
-// the check-in, so no legitimate employee ever gets locked out by it.
+
 const http  = require('http');
 const IP_GEO_MISMATCH_KM = 150;
 
@@ -117,6 +110,30 @@ const LEAVE_HOLIDAYS_MMDD = new Set([
   '01-01','03-03','03-25','03-31','06-20','07-16','08-12','08-28',
   '09-11','09-18','11-11','11-24','12-03','12-24',
 ]);
+// ── Auto-delete signed-leave uploads older than 60 days ────────────────
+const SIGNED_LEAVE_RETENTION_MS = 60 * 24 * 60 * 60 * 1000; // ~2 months
+const cleanupSignedLeaveDocs = async () => {
+  try {
+    const cutoff = new Date(Date.now() - SIGNED_LEAVE_RETENTION_MS);
+    const stale = await AttendanceRecord.find({
+      signed_leave_path: { $ne: null },
+      signed_leave_uploaded_at: { $lt: cutoff },
+    }).select('_id signed_leave_path signed_leave_public_id').lean();
+
+    for (const rec of stale) {
+      try {
+        if (typeof deleteFile === 'function') await deleteFile(rec.signed_leave_public_id || rec.signed_leave_path);
+      } catch (e) { console.error('[CleanupSignedLeave] delete failed for', rec._id, e.message); }
+
+      await AttendanceRecord.findByIdAndUpdate(rec._id, {
+        $set: { signed_leave_path: null, signed_leave_public_id: null, signed_leave_name: null, signed_leave_uploaded_at: null },
+      });
+    }
+    if (stale.length) console.log(`[CleanupSignedLeave] removed ${stale.length} expired file(s)`);
+  } catch (err) { console.error('[CleanupSignedLeave] job failed:', err.message); }
+};
+cleanupSignedLeaveDocs();
+setInterval(cleanupSignedLeaveDocs, 24 * 60 * 60 * 1000);
 // Dynamic holiday cache from DB (refreshed hourly, falls back to static list)
 let _attHolCache = null;
 let _attHolCacheAt = 0;
@@ -182,7 +199,20 @@ const upload = multer({
     cb(null, true);
   },
 });
-
+const SIGNED_LEAVE_EXT_MIME = {
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+  '.webp': 'image/webp', '.pdf': 'application/pdf',
+};
+const uploadSignedLeave = multer({
+  storage: multer.memoryStorage(),
+  limits:  { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (!SIGNED_LEAVE_EXT_MIME[ext]) return cb(new Error('Only JPG, PNG, WEBP or PDF accepted'));
+    if (file.mimetype !== SIGNED_LEAVE_EXT_MIME[ext]) return cb(new Error('File extension does not match file type'));
+    cb(null, true);
+  },
+});
 // ── Multer — reapply supporting documents (images + PDFs + Office docs) ──
 const REAPPLY_EXT_MIME = {
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
@@ -2485,7 +2515,96 @@ router.get('/signed-reports/:empId', authenticate, async (req, res) => {
     res.json({ success: true, data: reports });
   } catch (err) { console.error(err); res.status(500).json({ success: false, message: 'Server error' }); }
 });
+// ─────────────────────────────────────────────────────────────────────────
+// PUT /api/attendance/:id/upload-signed-leave
+// Employee uploads the BDO-signed scan of an already-approved leave.
+// Stored under ams/users/{empId}/leave/. Auto-deleted after 60 days.
+// ─────────────────────────────────────────────────────────────────────────
+router.put('/:id/upload-signed-leave', authenticate, authorize('employee'), uploadSignedLeave.single('signedLeave'), async (req, res) => {
+  try {
+    const record = await AttendanceRecord.findOne({ _id: req.params.id, emp_id: req.user.id }).lean();
+    if (!record) return res.status(404).json({ success: false, message: 'Record not found' });
+    if (record.duty_type !== 'Leave' && !record.leave_type) {
+      return res.status(400).json({ success: false, message: 'This is not a leave record' });
+    }
+    if (!req.file) return res.status(400).json({ success: false, message: 'A signed copy file is required.' });
+    const ext  = path.extname(req.file.originalname).replace('.', '') || 'pdf';
+    const name = makeDocName(req.user, 'signed_leave', ext);
+    const signedPath = await uploadFile(
+      req.file.buffer,
+      `ams/users/${req.user.emp_id || req.user.id}/leave`,
+      req.file.originalname, req.file.mimetype, name,
+    );
 
+    await AttendanceRecord.findByIdAndUpdate(record._id, {
+      $set: {
+        signed_leave_path:        signedPath,
+        signed_leave_name:        req.file.originalname,
+        signed_leave_uploaded_at: new Date(),
+        signed_leave_uploaded_by: req.user.id,
+      },
+    });
+
+    if (record.manager_id) {
+      await notify(record.manager_id, 'Signed Leave Letter Uploaded',
+        `${req.user.name || 'An employee'} uploaded the signed leave letter for ${recordDateLabel(record)}.`,
+        'info', record._id, '/manager/leaves');
+    }
+    const overseers = await User.find({ role: { $in: ['super_admin', 'hr'] }, is_active: { $ne: 0 } }).select('_id').lean();
+    for (const o of overseers) {
+      await notify(o._id, 'Signed Leave Letter Uploaded',
+        `${req.user.name || 'An employee'} uploaded the signed leave letter for ${recordDateLabel(record)}.`,
+        'info', record._id, '/admin/attendance');
+    }
+
+    await AuditLog.create({ _id: uuidv4(), user_id: req.user.id, action: 'UPLOAD_SIGNED_LEAVE', entity_type: 'attendance', entity_id: record._id });
+    const updated = await AttendanceRecord.findById(record._id).lean();
+    res.json({ success: true, message: 'Signed leave letter uploaded', data: formatRecord(updated) });
+  } catch (err) { console.error('[UploadSignedLeave]', err); res.status(500).json({ success: false, message: err.message || 'Server error' }); }
+});
+// ─────────────────────────────────────────────────────────────────────────
+// DELETE /api/attendance/:id/signed-leave
+// Super Admin only — removes a wrongly uploaded signed-leave file (e.g.
+// employee uploaded the wrong scan, blurry photo, someone else's letter).
+// The employee is notified so they know to re-upload the correct copy.
+// This is separate from the 2-month auto-cleanup cron, which still runs
+// unchanged for normal expiry.
+// ─────────────────────────────────────────────────────────────────────────
+router.delete('/:id/signed-leave', authenticate, authorize('super_admin'), async (req, res) => {
+  try {
+    const record = await AttendanceRecord.findById(req.params.id).lean();
+    if (!record) return res.status(404).json({ success: false, message: 'Record not found' });
+    if (!record.signed_leave_path) {
+      return res.status(400).json({ success: false, message: 'No signed leave file uploaded for this record.' });
+    }
+
+    try {
+      if (typeof deleteFile === 'function') {
+        await deleteFile(record.signed_leave_public_id || record.signed_leave_path);
+      }
+    } catch (e) { console.error('[DeleteSignedLeave] Cloudinary delete failed (non-fatal):', e.message); }
+
+    await AttendanceRecord.findByIdAndUpdate(record._id, {
+      $set: {
+        signed_leave_path: null, signed_leave_public_id: null,
+        signed_leave_name: null, signed_leave_uploaded_at: null,
+        signed_leave_uploaded_by: null,
+      },
+    });
+
+    await notify(record.emp_id, 'Signed Leave Letter Removed',
+      `Your uploaded signed leave letter for ${recordDateLabel(record)} was removed by Super Admin because it was incorrect. Please upload the correct signed copy.`,
+      'warning', record._id, '/employee/history');
+
+    await AuditLog.create({
+      _id: uuidv4(), user_id: req.user.id, action: 'DELETE_SIGNED_LEAVE',
+      entity_type: 'attendance', entity_id: record._id, old_value: record.signed_leave_name,
+    });
+
+    const updated = await AttendanceRecord.findById(record._id).lean();
+    res.json({ success: true, message: 'Signed leave file removed', data: formatRecord(updated) });
+  } catch (err) { console.error('[DeleteSignedLeave]', err); res.status(500).json({ success: false, message: 'Server error' }); }
+});
 // ─────────────────────────────────────────────────────────────────────────────
 // Format helper
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2549,6 +2668,9 @@ function formatRecord(r) {
     checkoutFaceConfidence:         r.checkout_face_confidence ?? null,
     empProfilePhoto:          r.emp_face_photo || r.emp_profile_photo || null,
     attendanceType:           r.attendance_type || null,
+ signedLeavePath:       r.signed_leave_path || null,
+    signedLeaveName:       r.signed_leave_name || null,
+    signedLeaveUploadedAt: r.signed_leave_uploaded_at || null,
   };
 }
 
