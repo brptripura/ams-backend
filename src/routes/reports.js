@@ -1220,7 +1220,9 @@ router.get('/signed-attendance-merge',
 
     const EMP_SELECT = '_id name emp_id signed_reports';
     let employees = [];
-    if (managerId && String(managerId).trim() !== '') {
+    // A manager may only ever see their own team's signed reports — never an
+    // arbitrary managerId — regardless of what's passed in the query string.
+    if (managerId && String(managerId).trim() !== '' && role !== 'manager') {
       employees = await User.find({ manager_id: toObjId(managerId), is_active: { $ne: false } }).select(EMP_SELECT).lean();
     } else if (role === 'manager') {
       employees = await User.find({ manager_id: toObjId(req.user.id), is_active: { $ne: false } }).select(EMP_SELECT).lean();
